@@ -1,0 +1,37 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { Store } from '../app/store.mjs';
+import { makeDecision, tasks } from '../app/decisions.mjs';
+test('every task and follow-up sends exact master prompt and evidence; missing prompt fails before provider', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shotcaller-decision-'));
+  const store = new Store(root);
+  const snapshot = await store.importHistorical({ snapshot_id: 'old', source: { captured_at: null }, players: [{ name: 'Player' }] });
+  const promptPath = new URL('../prompts/shotcaller-system.md', import.meta.url);
+  const master = await readFile(promptPath, 'utf8');
+  const requests = [];
+  const transport = async (url, options) => { requests.push(JSON.parse(options.body)); return new Response(JSON.stringify({ model: 'test-served', choices: [{ message: { content: 'Hold. Evidence is historical.' } }] })); };
+  const config = { promptPath, endpoint: 'https://api.openai.com/v1/chat/completions', model: 'test-model', apiKey: 'secret-test-key' };
+  let previous;
+  for (const task of tasks) {
+    previous = await makeDecision({ task, question: 'What should I do?', snapshot_ids: [snapshot.id], previous_id: task === 'followup' ? previous.id : undefined }, config, store, transport);
+    assert.equal(requests.at(-1).messages[0].role, 'system');
+    assert.equal(requests.at(-1).messages[0].content, master);
+    assert.match(requests.at(-1).messages.at(-1).content, /historical_import/);
+    assert.deepEqual(previous.snapshot_ids, [snapshot.id]);
+    assert.equal(previous.served_model, 'test-served');
+    assert.equal(JSON.stringify(previous).includes(config.apiKey), false);
+  }
+  assert.match(requests.at(-1).messages.at(-1).content, /previous_decision/);
+  const calls = requests.length;
+  await assert.rejects(makeDecision({ task: 'recommendation', question: 'x', snapshot_ids: [snapshot.id] }, { ...config, promptPath: join(root, 'absent') }, store, transport));
+  const empty = join(root, 'empty.md'); await writeFile(empty, '  ');
+  await assert.rejects(makeDecision({ task: 'recommendation', question: 'x', snapshot_ids: [snapshot.id] }, { ...config, promptPath: empty }, store, transport), /empty/);
+  assert.equal(requests.length, calls);
+  await assert.rejects(makeDecision({ task: 'trade-now', question: 'x', snapshot_ids: [snapshot.id] }, config, store, transport), /task/);
+  const savedCount = (await store.list('decisions')).length;
+  await assert.rejects(makeDecision({ task: 'recommendation', question: 'x', snapshot_ids: [snapshot.id] }, config, store, async () => new Response('', { status: 500 })), /HTTP 500/);
+  assert.equal((await store.list('decisions')).length, savedCount);
+});

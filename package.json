@@ -1,0 +1,12 @@
+{
+  "name": "shotcaller", "version": "0.1.0", "private": true, "type": "module",
+  "engines": { "node": ">=20.19" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env app/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node --test test/browser/*.test.mjs",
+    "shotcaller": "node --env-file-if-exists=.env app/cli.mjs",
+    "login": "node --env-file-if-exists=.env app/login.mjs"
+  },
+  "dependencies": { "playwright": "1.64.1" }
+}

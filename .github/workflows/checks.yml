@@ -1,0 +1,45 @@
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - run: npm run test:browser
+      - name: Build Railway image
+        run: docker build --tag shotcaller:test .
+      - name: Check container and persistent volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APP_TOKEN="$(openssl rand -hex 24)"
+          docker volume create shotcaller-test
+          docker run --detach --name shotcaller-test --publish 3030:3030 --env APP_TOKEN --env PORT=3030 --mount source=shotcaller-test,target=/data shotcaller:test
+          trap 'docker logs shotcaller-test; docker rm -f shotcaller-test; docker volume rm shotcaller-test' EXIT
+          for i in {1..30}; do
+            if curl --fail --silent http://localhost:3030/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://localhost:3030/health
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:3030/api/state)" = 401
+          curl --fail --silent -H "Authorization: Bearer $APP_TOKEN" -H 'Content-Type: application/json' -d '{"snapshot_id":"ci-persistence","source":{"type":"synthetic_test"},"teams":[]}' http://localhost:3030/api/import > /tmp/import.json
+          docker restart shotcaller-test
+          for i in {1..30}; do
+            if curl --fail --silent http://localhost:3030/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent -H "Authorization: Bearer $APP_TOKEN" http://localhost:3030/api/state > /tmp/state.json
+          node --input-type=module -e "import fs from 'node:fs'; const a=JSON.parse(fs.readFileSync('/tmp/import.json')); const s=JSON.parse(fs.readFileSync('/tmp/state.json')); if(s.snapshots.length!==1 || s.snapshots[0].id!==a.id || s.latest_id!==null) process.exit(1)"

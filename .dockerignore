@@ -1,0 +1,11 @@
+*
+!package.json
+!package-lock.json
+!Dockerfile
+!docker-entrypoint.sh
+!app/
+!app/**
+!public/
+!public/**
+!prompts/
+!prompts/shotcaller-system.md
