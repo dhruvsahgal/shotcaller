@@ -34,4 +34,7 @@ test('every task and follow-up sends exact master prompt and evidence; missing p
   const savedCount = (await store.list('decisions')).length;
   await assert.rejects(makeDecision({ task: 'recommendation', question: 'x', snapshot_ids: [snapshot.id] }, config, store, async () => new Response('', { status: 500 })), /HTTP 500/);
   assert.equal((await store.list('decisions')).length, savedCount);
+  const image = await store.importHistorical({ snapshot_id:'image-fixture', kind:'source_image', source:{type:'synthetic'}, image_base64:'AAAA' });
+  await assert.rejects(makeDecision({task:'recommendation',question:'x',snapshot_ids:[image.id]},config,store,transport), /structured/);
+  assert.equal(requests.length,calls);
 });

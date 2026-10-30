@@ -56,3 +56,19 @@ npm run test:browser
 ```
 
 Open `http://127.0.0.1:3030`. See [MVP.md](MVP.md) for the API, backups, operating limits and detailed configuration. Tests use synthetic fixtures. Live Yahoo access, model access and cloud persistence require separate verification after deployment.
+
+## Consolidated overview and data storage
+
+After connecting, **Overview** brings together dated matchup totals and trends, roster membership, lineup audits, waiver observations, transaction rows, recorded decisions, and the notebook archive. Each section links to its immutable source. Team Log statistics remain separate from roster ownership; historical league totals remain separate from current matchups. Uploading old evidence does not make it a new observation.
+
+Structured JSON remains the source of truth on the existing Railway volume. Markdown holds reasoning and research. See [the data model](docs/data-model.md) and [future SQLite schema](schema/shotcaller.sql). SQLite is designed but **not enabled**; it can later index the existing archive on the same volume without another database service.
+
+To synchronize local evidence into an authenticated running instance, set `SHOTCALLER_URL` and its `APP_TOKEN` in your shell, then run:
+
+```sh
+node scripts/sync-evidence.mjs /path/to/private/notebook
+```
+
+The script uploads JSON from `data/snapshots`, Markdown from `reports`, `knowledge`, and `sources`, the three root strategy/research/design documents if present, and PNG source screenshots. It does not read `.env` or browser authentication files. Exact duplicate imports reuse the same immutable record. Changed documents produce a new archive version. It stops on a failed upload; rerunning safely resumes via deduplication. Screenshot attachments are for inspection; decision requests must use their structured transcription or notes.
+
+This is an explicit import, not a background sync. Some original chat material may still need transcription; coverage gaps stay visible in the overview. Keep the notebook, snapshots, reports and credentials out of this public repository.

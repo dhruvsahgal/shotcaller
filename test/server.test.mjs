@@ -18,6 +18,18 @@ test('API protects private evidence and handles a failed refresh without fake su
     const initial = await (await fetch(`${base}/api/state`, { headers })).json();
     assert.equal(initial.prompt.ready, true);
     assert.equal(initial.latest_id, null);
+    assert.equal(initial.overview.matchup, null);
+    const imported = await fetch(`${base}/api/import`, {method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({snapshot_id:'manual-matchup',kind:'matchup_weekly_category_totals',week:2,observed_date:'2026-10-30',source:{type:'synthetic'},teams:[{name:'A',stats:{pts:100}},{name:'B',stats:{pts:90}}]})});
+    assert.equal(imported.status,201);
+    const updated = await (await fetch(`${base}/api/state`,{headers})).json();
+    assert.equal(updated.overview.matchup.teams[0].stats.pts,100);
+    assert.equal(updated.overview.matchup.meta.observed_at,'2026-10-30');
+    assert.equal(updated.latest_id,null);
+    const importPayload=payload=>fetch(`${base}/api/import`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    assert.equal((await importPayload({snapshot_id:'bad-documents',source:{type:'test'},kind:'collected_documents',documents:{wrong:true}})).status,400);
+    assert.equal((await importPayload({snapshot_id:'large-archive',source:{type:'test'},note:'x'.repeat(600000)})).status,201);
+    assert.equal((await importPayload({snapshot_id:'oversized',source:{type:'test'},note:'x'.repeat(1048576)})).status,400);
+    assert.equal((await (await fetch(`${base}/api/state`,{headers})).json()).snapshots.length,2);
     assert.equal(JSON.stringify(initial).includes(config.token), false);
     assert.equal((await fetch(`${base}/api/refresh`, { method: 'POST', headers })).status, 202);
     let final;

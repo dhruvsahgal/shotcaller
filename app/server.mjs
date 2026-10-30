@@ -6,11 +6,13 @@ import { pathToFileURL } from 'node:url';
 import { Store, atomicJSON } from './store.mjs';
 import { configuration } from './config.mjs';
 import { analyze } from './analysis.mjs';
+import { buildOverview } from './overview.mjs';
+import { historicalShapeError } from './import-validation.mjs';
 import { makeDecision, promptInfo, tasks } from './decisions.mjs';
 import { refreshYahoo } from './yahoo.mjs';
 import { loadSettings, saveSettings, setupStatus, saveYahooState } from './setup.mjs';
 
-const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
+const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/overview.js': ['overview.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
 function authorized(req, token) {
   const supplied = Buffer.from(req.headers.authorization || '');
   const expected = Buffer.from(`Bearer ${token}`);
@@ -56,7 +58,7 @@ export async function createApp(config, options = {}) {
         if (refreshing || deciding || configuring) return send(409, { error: 'Wait for the current operation to finish' });
         configuring = true;
         try {
-          const input = await body(req, url.pathname === '/api/setup' ? 32000 : 512000);
+          const input = await body(req, url.pathname === '/api/setup' ? 32000 : url.pathname === '/api/import' ? 1048576 : 512000);
           if (url.pathname === '/api/import') {
             const record = await store.importHistorical(input);
             return send(201, { id: record.id, status: record.status });
@@ -69,7 +71,8 @@ export async function createApp(config, options = {}) {
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const records = await store.list(), decisions = await store.list('decisions');
         let prompt; try { const p = await promptInfo(config.promptPath); prompt = { hash: p.hash, text: p.text, ready: true }; } catch { prompt = { ready: false, error: 'Master prompt unavailable; decisions disabled' }; }
-        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: (await store.latest())?.id || null, snapshots: records.map(({ id, kind, status, stored_at, observed_at, warnings, payload }) => ({ id, kind, status, stored_at, observed_at: observed_at || payload?.source?.captured_at || null, label: payload?.kind || kind, warnings: warnings || payload?.quality_notes || [] })), analysis: analyze(records), decisions });
+        const overview = buildOverview(records, decisions, config.leagueId);
+        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: (await store.latest())?.id || null, snapshots: overview.sources, overview, analysis: analyze(records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload))), decisions });
       }
       if (req.method === 'GET' && /^\/api\/snapshots\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1))));
       if (req.method === 'POST' && url.pathname === '/api/refresh') {
