@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, rename, writeFile, rm, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { historicalShapeError } from './import-validation.mjs';
 
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 export function safeId(id) {
@@ -46,6 +47,8 @@ export class Store {
   }
   async importHistorical(payload) {
     if (!payload || typeof payload !== 'object' || !payload.snapshot_id || !payload.source) throw new Error('Expected a sourced historical snapshot');
+    const invalid = historicalShapeError(payload);
+    if (invalid) throw new Error(invalid);
     const hash = digest(payload);
     return this.publish({ schema_version: 2, id: `import-${hash.slice(0, 24)}`, kind: 'historical_import', status: 'historical', stored_at: new Date().toISOString(), content_hash: hash, payload });
   }

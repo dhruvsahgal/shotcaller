@@ -21,6 +21,7 @@ export async function makeDecision(request, config, store, transport = fetch) {
   const endpoint = new URL(config.endpoint);
   if (endpoint.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(endpoint.hostname)) throw new Error('Model endpoint requires HTTPS');
   const snapshots = await Promise.all([...new Set(request.snapshot_ids)].map(id => store.read(id)));
+  if (snapshots.some(s => s.payload?.kind === 'source_image')) throw new Error('Evidence images are archival; select their structured statistics or notes for a decision');
   let previous = null;
   if (request.task === 'followup') {
     if (!request.previous_id) throw new Error('Follow-up requires a previous decision');

@@ -11,7 +11,7 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
   const config = { ...configuration(), dataDir: await mkdtemp(join(tmpdir(), 'shotcaller-ui-')), token: 'test-ui-access-token-at-least-24-characters' };
   const store = new Store(config.dataDir);
   const first = await store.importHistorical({
-    snapshot_id: 'browser-test-week1', kind: 'league_weekly_category_totals',
+    snapshot_id: 'browser-test-week1', kind: 'league_weekly_category_totals', week: 1,
     source: { captured_at: '2026-10-25T12:00:00Z', type: 'synthetic_test_fixture' },
     coverage: { week: 1 },
     teams: [
@@ -20,6 +20,7 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     ]
   });
   const second = await store.importHistorical({ ...first.payload, snapshot_id: 'browser-test-alternate-source' });
+  await store.importHistorical({snapshot_id:'partial-lineup',source:{type:'synthetic'},kind:'daily_lineup_audit',observed_date:'2026-10-30',days:[{date:'2026-10-30'},{date:'2026-10-31',playing_in_active_slots:[],benched_with_game:[],conflict:false}]});
   const app = await createApp(config, { store });
   await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch();
@@ -30,7 +31,14 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.locator('#token').fill(config.token);
     await page.getByRole('button', { name: 'Connect →', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
-    assert.match(await page.locator('#freshness').innerText(), /Historical/);
+    assert.match(await page.locator('#freshness').innerText(), /Saved observations/);
+    assert.equal(await page.locator('#overview').isVisible(), true);
+    assert.match(await page.locator('#overview-league').innerText(), /Example Team A/);
+    assert.match(await page.locator('#overview-coverage').innerText(), /does not automatically sync/);
+    const lineupRows=await page.locator('#overview-lineups tbody tr').allTextContents();
+    assert.match(lineupRows[0],/Not captured/);
+    assert.equal(lineupRows[0].includes('None observed'),false);
+    assert.match(lineupRows[1],/None observed/);
     await page.locator('[data-tab=league]').click();
     assert.match(await page.locator('#league-content').innerText(), /Example Team A/);
     assert.match(await page.locator('#league-content').innerText(), /HISTORICAL WEEK 1/);
@@ -51,6 +59,9 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: 'test-results/shotcaller-setup-mobile.png', fullPage: true });
+    await page.locator('[data-tab=overview]').click();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.screenshot({ path: 'test-results/shotcaller-overview-mobile.png', fullPage: true });
     await page.locator('[data-tab=evidence]').click();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: 'test-results/shotcaller-mobile.png', fullPage: true });
