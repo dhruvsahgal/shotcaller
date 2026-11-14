@@ -13,7 +13,7 @@ test('bounded artifacts publish one logical dataset across overlap, retry and re
   const h = await harness();
   const a = await stage(h, 'collector-attempt-one'), b = await stage(h, 'collector-attempt-two');
   const [first, duplicate] = await Promise.all([h.ingest.commit(a.capability), h.ingest.commit(b.capability)]);
-  assert.equal(first.duplicate, false); assert.equal(duplicate.duplicate, true);
+  assert.deepEqual([first.duplicate, duplicate.duplicate].sort(), [false, true]);
   assert.equal(first.observation_id, duplicate.observation_id);
   assert.equal((await h.store.list('observations')).length, 1);
   assert.equal((await h.store.list('attempts')).length, 2);

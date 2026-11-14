@@ -24,8 +24,12 @@ export class CollectorIngest {
     if (!/^collector-[A-Za-z0-9-]{1,64}$/.test(attempt_id)) throw new Error('Invalid collector attempt ID');
     const run = await this.store.read(run_id, 'runs');
     if (run.scope.league_id !== this.config.leagueId || run.scope.dataset !== 'team_roster') throw new Error('Invalid collector run scope');
-    const priorAttempts = await this.store.list('attempts');
-    if (priorAttempts.some(a => a.id === attempt_id && a.run_id !== run_id)) throw new Error('Invalid collector attempt binding');
+    try {
+      const priorAttempt = await this.store.read(attempt_id, 'attempts');
+      if (priorAttempt.run_id !== run_id) throw new Error('Invalid collector attempt binding');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     await this.init();
     const token = randomBytes(32).toString('base64url');
     const claims = { version: 1, run_id, attempt_id, league_id: run.scope.league_id, issued_at: new Date(this.now()).toISOString(), expires_at: new Date(this.now() + ingestLimits.capability_ms).toISOString(), classes: Object.keys(artifactLimits), limits: ingestLimits };
@@ -90,9 +94,12 @@ export class CollectorIngest {
       const run = await this.store.read(claims.run_id, 'runs');
       const artifacts = await Promise.all(manifest.artifacts.map(async a => ({ ...a, bytesRead: await this.readArtifact(claims, a.id) })));
       const output = validateCollectorOutput(JSON.parse(artifacts.find(a => a.class === 'collector_output').bytesRead.toString()));
-      const capture = JSON.parse(artifacts.find(a => a.class === 'structured_capture').bytesRead.toString());
+      const captureArtifact = artifacts.find(a => a.class === 'structured_capture');
+      const capture = JSON.parse(captureArtifact.bytesRead.toString());
+      const captureHash = canonicalDigest(capture);
+      const artifactIds = artifacts.map(artifact => this.artifactId(claims, artifact.id));
       if (output.league.id !== claims.league_id || output.team.id !== run.scope.team_id || (output.status !== 'needs_login' && canonicalDigest(output.scoring_period) !== canonicalDigest(run.scope.scoring_period))) throw new Error('Invalid collector output scope');
-      if (!output.extraction || output.extraction.source_hash !== canonicalDigest(capture)) throw new Error('Invalid collector source hash');
+      if (!output.extraction || output.extraction.source_hash !== captureHash) throw new Error('Invalid collector source hash');
       const derived = validateCollectorOutput(extractRosterObservation(capture, { league: output.league, team: output.team, scoring_period: run.scope.scoring_period, allowed_pages: output.allowed_pages }));
       if (canonicalDigest(output.roster) !== canonicalDigest(derived.roster) || (output.status === 'complete' && derived.status !== 'complete')) throw new Error('Invalid collector source reconciliation');
       const refs = [...output.source.evidence_refs, ...output.roster.flatMap(row => row.evidence_refs), ...output.extraction.page_inventory.flatMap(page => page.evidence_refs)];
@@ -102,12 +109,12 @@ export class CollectorIngest {
       try { observation = await this.store.read(observationId, 'observations'); duplicate = true; }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       if (!observation && output.status !== 'needs_login') {
-        observation = await this.store.saveObservation({ id: observationId, source: { id: this.artifactId(claims, artifacts.find(a => a.class === 'structured_capture').id), hash: canonicalDigest(capture) }, observed_at: output.source.observed_at, observed_at_precision: 'instant', scope: run.scope, coverage: { status: output.status, note: output.coverage.note || 'All visible roster rows reconciled with preserved source artifacts.' }, parser_version: 'bounded-roster-v1', data: output, links: { evidence: artifacts.map(a => this.artifactId(claims, a.id)) } });
+        observation = await this.store.saveObservation({ id: observationId, source: { id: this.artifactId(claims, captureArtifact.id), hash: captureHash }, observed_at: output.source.observed_at, observed_at_precision: 'instant', scope: run.scope, coverage: { status: output.status, note: output.coverage.note || 'All visible roster rows reconciled with preserved source artifacts.' }, parser_version: 'bounded-roster-v1', data: output, links: { evidence: artifactIds } });
       }
       let attempt;
       try { attempt = await this.store.read(claims.attempt_id, 'attempts'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (!attempt) attempt = await this.store.saveRunAttempt({ id: claims.attempt_id, run_id: run.id, started_at: claims.issued_at, finished_at: new Date(this.now()).toISOString(), outcome: output.status, artifact_ids: artifacts.map(a => this.artifactId(claims, a.id)), observation_id: observation?.id || null, duplicate_of: duplicate ? observation.id : null, reason: output.status === 'needs_login' ? 'Human login is required; no roster dataset published.' : duplicate ? 'Logical dataset already published; duplicate attempt retained.' : 'Artifact hashes verified on private-volume readback.' });
+      if (!attempt) attempt = await this.store.saveRunAttempt({ id: claims.attempt_id, run_id: run.id, started_at: claims.issued_at, finished_at: new Date(this.now()).toISOString(), outcome: output.status, artifact_ids: artifactIds, observation_id: observation?.id || null, duplicate_of: duplicate ? observation.id : null, reason: output.status === 'needs_login' ? 'Human login is required; no roster dataset published.' : duplicate ? 'Logical dataset already published; duplicate attempt retained.' : 'Artifact hashes verified on private-volume readback.' });
       return { run_id: run.id, attempt_id: attempt.id, observation_id: attempt.observation_id, status: attempt.outcome, duplicate: Boolean(attempt.duplicate_of), verified: true, artifacts: manifest.artifacts.map(({ id, sha256, bytes }) => ({ id, sha256, bytes })) };
     };
     const pending = this.queue.then(operation, operation); this.queue = pending.catch(() => {}); return pending;

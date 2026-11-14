@@ -27,9 +27,9 @@ export function normalizeMarketObservation(input) {
   });
 }
 
-export function reconcileMarket(observations = []) {
+function reconcileNormalized(normalizedEvents) {
   const events = new Map();
-  for (const observation of observations) for (const event of normalizeMarketObservation(observation)) {
+  for (const event of normalizedEvents) {
     const existing = events.get(event.id);
     if (!existing) { events.set(event.id, event); continue; }
     for (const evidence of event.observations) if (!existing.observations.some(e => e.id === evidence.id && e.row_index === evidence.row_index)) existing.observations.push(evidence);
@@ -42,6 +42,10 @@ export function reconcileMarket(observations = []) {
   }
   const all = [...events.values()];
   return { events: all, confirmed: all.filter(event => event.status === 'confirmed' && event.identity_confidence === 'provider_key' && event.legs_complete && !event.conflict), requests: all.filter(event => event.status === 'requested'), rejected: all.filter(event => event.status === 'rejected'), unresolved: all.filter(event => event.status === 'unknown' || event.conflict || event.identity_confidence === 'observation_only' || !event.legs_complete), notes: ['Unkeyed rows remain separate observations; names and displayed dates do not uniquely identify transactions.', 'Confirmed status requires explicit source evidence. Availability transitions are observations, not proof of a transaction.'] };
+}
+
+export function reconcileMarket(observations = []) {
+  return reconcileNormalized(observations.flatMap(normalizeMarketObservation));
 }
 
 /** Detect status transitions only between comparable complete market snapshots. */
@@ -71,12 +75,12 @@ export function marketEvidence(records = []) {
     for (const [index, page] of (Array.isArray(payload.pages) ? payload.pages : []).entries()) if (page.kind === 'transactions') observations.push({ id: `${record.id}-page-${index}`, league_id, observed_at: strictInstant(page.observed_at) ? page.observed_at : observed_at, origin: 'native', rows: page.rows ?? [], source: { snapshot_id: record.id, url: page.url } });
     if (record.kind === 'observation' && record.scope.dataset === 'transactions' && Array.isArray(record.data?.rows)) observations.push({ id: record.id, league_id, observed_at, origin: 'native', rows: record.data.rows, source: record.source });
   }
-  const valid = [], invalid_observations = [];
+  const normalized = [], invalid_observations = [];
   for (const observation of observations) {
-    try { normalizeMarketObservation(observation); valid.push(observation); }
+    try { normalized.push(...normalizeMarketObservation(observation)); }
     catch (error) { invalid_observations.push({ id: observation.id, source: observation.source, reason: error.message }); }
   }
-  return { ...reconcileMarket(valid), invalid_observations };
+  return { ...reconcileNormalized(normalized), invalid_observations };
 }
 
 export function rollingTransactionWindow({ end, previous_end = null, lookback_days = 7, overlap_hours = 24 }) {

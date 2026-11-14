@@ -105,11 +105,13 @@ export class CollectorRuns {
   async expirePending() {
     const runs = await this.store.list('runs');
     const attempts = await this.store.list('attempts');
+    const settledRuns = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || attempt.outcome === 'timed_out').map(attempt => attempt.run_id));
     for (const run of runs) {
+      if (settledRuns.has(run.id)) continue;
       let pending;
       try { pending = JSON.parse(await readFile(join(this.root, `${run.id}.json`), 'utf8')); }
       catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-      if (Date.parse(pending.deadline) > this.now() || attempts.some(a => a.run_id === run.id && (a.artifact_ids.length > 0 || a.outcome === 'timed_out'))) continue;
+      if (Date.parse(pending.deadline) > this.now()) continue;
       await this.store.saveRunAttempt({ id: `collector-timeout-${run.id.slice(4)}`, run_id: run.id, started_at: pending.accepted_at, finished_at: pending.deadline, outcome: 'timed_out', artifact_ids: [], reason: 'No verified collector output arrived before the deadline. Check login, capacity and model budget.' });
     }
   }

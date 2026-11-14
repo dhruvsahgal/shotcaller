@@ -37,28 +37,30 @@ export function createCoveragePlan({ league_id, season, scoring_period, team_ids
 
 function fragmentIssues(segment, fragment) {
   const issues = [];
-  if (!fragment || typeof fragment !== 'object') return ['Invalid fragment'];
-  if (typeof fragment.id !== 'string' || !fragment.id || typeof fragment.collection_id !== 'string' || !fragment.collection_id || fragment.segment_id !== segment.id) issues.push('Fragment identity mismatch');
-  if (!equal(fragment.scope ?? null, segment.scope) || !equal(fragment.filters ?? {}, segment.filters)) issues.push('Fragment period, scope or filter mismatch');
-  if (!strictInstant(fragment.observed_at) || !fragment.source?.id || !/^[a-f0-9]{64}$/.test(fragment.source?.hash ?? '') || !Array.isArray(fragment.evidence_refs) || !fragment.evidence_refs.length || fragment.evidence_refs.some(ref => typeof ref !== 'string' || !ref.trim())) issues.push('Missing dated source evidence');
-  if (!['complete', 'partial', 'unknown'].includes(fragment.status)) issues.push('Invalid fragment status');
-  if (typeof fragment.page_key !== 'string' || !fragment.page_key || !Array.isArray(fragment.rows)) issues.push('Missing page key or rows');
-  if (fragment.terminal !== true && (typeof fragment.next_page_key !== 'string' || !fragment.next_page_key)) issues.push('Missing terminal or next-page evidence');
-  if (fragment.terminal === true && fragment.next_page_key != null) issues.push('Terminal page also has a next-page key');
-  if (fragment.reported_total_rows != null && (!Number.isSafeInteger(fragment.reported_total_rows) || fragment.reported_total_rows < 0)) issues.push('Invalid reported row total');
+  let restartRequired = false;
+  const add = (message, restart = true) => { issues.push(message); restartRequired ||= restart; };
+  if (!fragment || typeof fragment !== 'object') return { issues: ['Invalid fragment'], restartRequired: true };
+  if (typeof fragment.id !== 'string' || !fragment.id || typeof fragment.collection_id !== 'string' || !fragment.collection_id || fragment.segment_id !== segment.id) add('Fragment identity mismatch');
+  if (!equal(fragment.scope ?? null, segment.scope) || !equal(fragment.filters ?? {}, segment.filters)) add('Fragment period, scope or filter mismatch');
+  if (!strictInstant(fragment.observed_at) || !fragment.source?.id || !/^[a-f0-9]{64}$/.test(fragment.source?.hash ?? '') || !Array.isArray(fragment.evidence_refs) || !fragment.evidence_refs.length || fragment.evidence_refs.some(ref => typeof ref !== 'string' || !ref.trim())) add('Missing dated source evidence');
+  if (!['complete', 'partial', 'unknown'].includes(fragment.status)) add('Invalid fragment status');
+  if (typeof fragment.page_key !== 'string' || !fragment.page_key || !Array.isArray(fragment.rows)) add('Missing page key or rows');
+  if (fragment.terminal !== true && (typeof fragment.next_page_key !== 'string' || !fragment.next_page_key)) add('Missing terminal or next-page evidence');
+  if (fragment.terminal === true && fragment.next_page_key != null) add('Terminal page also has a next-page key');
+  if (fragment.reported_total_rows != null && (!Number.isSafeInteger(fragment.reported_total_rows) || fragment.reported_total_rows < 0)) add('Invalid reported row total');
   for (const row of Array.isArray(fragment.rows) ? fragment.rows : []) {
-    if (!row || typeof row !== 'object') { issues.push('Invalid source row'); continue; }
+    if (!row || typeof row !== 'object') { add('Invalid source row'); continue; }
     const dataset = segment.scope.dataset;
-    if (['team_roster', 'player_period_stats', 'daily_lineup', 'daily_contributions', 'market'].includes(dataset) && (typeof row.player_id !== 'string' || !row.player_id)) issues.push('Missing player identity');
-    if (['matchups', 'team_period_stats'].includes(dataset) && (typeof row.team_id !== 'string' || !row.team_id)) issues.push('Missing team identity');
-    if (row.team_id && segment.scope.team_id && row.team_id !== segment.scope.team_id) issues.push('Row team mismatch');
-    if (dataset === 'market' && row.availability !== segment.filters.availability) issues.push('Row availability mismatch');
-    if (dataset === 'daily_lineup' && (typeof row.slot !== 'string' || !row.slot)) issues.push('Missing lineup slot');
-    if (dataset === 'daily_contributions' && (row.fantasy_counted !== true || !row.stats)) issues.push('Daily contributions need explicit fantasy-counted source rows');
-    if (['player_period_stats', 'team_period_stats', 'matchups'].includes(dataset) && !row.stats) issues.push('Missing period statistics');
-    if (row.stats) { try { validateStats(row.stats); } catch { issues.push('Invalid source statistics'); } }
+    if (['team_roster', 'player_period_stats', 'daily_lineup', 'daily_contributions', 'market'].includes(dataset) && (typeof row.player_id !== 'string' || !row.player_id)) add('Missing player identity');
+    if (['matchups', 'team_period_stats'].includes(dataset) && (typeof row.team_id !== 'string' || !row.team_id)) add('Missing team identity');
+    if (row.team_id && segment.scope.team_id && row.team_id !== segment.scope.team_id) add('Row team mismatch');
+    if (dataset === 'market' && row.availability !== segment.filters.availability) add('Row availability mismatch');
+    if (dataset === 'daily_lineup' && (typeof row.slot !== 'string' || !row.slot)) add('Missing lineup slot');
+    if (dataset === 'daily_contributions' && (row.fantasy_counted !== true || !row.stats)) add('Daily contributions need explicit fantasy-counted source rows');
+    if (['player_period_stats', 'team_period_stats', 'matchups'].includes(dataset) && !row.stats) add('Missing period statistics');
+    if (row.stats) { try { validateStats(row.stats); } catch { add('Invalid source statistics'); } }
   }
-  return [...new Set(issues)];
+  return { issues: [...new Set(issues)], restartRequired };
 }
 
 /** One run's fragments only. Mixing dates/filters, repeated pages, or an unproven terminal never completes a segment. */
@@ -66,11 +68,13 @@ export function assessSegment(segment, fragments = []) {
   if (!Array.isArray(fragments)) throw new Error('Invalid segment fragments');
   if (fragments.some(fragment => !fragment || typeof fragment !== 'object' || Array.isArray(fragment))) return { segment_id: segment.id, status: 'partial', issues: ['Invalid fragment'], rows: [], evidence_ids: [], resume_page_key: null };
   if (!fragments.length) return { segment_id: segment.id, status: 'unknown', issues: ['No source capture'], rows: [], evidence_ids: [], resume_page_key: 'first' };
-  const issues = fragments.flatMap(fragment => fragmentIssues(segment, fragment));
-  if (new Set(fragments.map(fragment => fragment.collection_id)).size !== 1) issues.push('Fragment collection run mismatch');
+  const validations = fragments.map(fragment => fragmentIssues(segment, fragment));
+  const issues = validations.flatMap(result => result.issues);
+  let restartRequired = validations.some(result => result.restartRequired);
+  if (new Set(fragments.map(fragment => fragment.collection_id)).size !== 1) { issues.push('Fragment collection run mismatch'); restartRequired = true; }
   const pages = new Map();
   for (const fragment of fragments) {
-    if (pages.has(fragment.page_key)) issues.push('Repeated pagination page');
+    if (pages.has(fragment.page_key)) { issues.push('Repeated pagination page'); restartRequired = true; }
     pages.set(fragment.page_key, fragment);
   }
   const ordered = [], visited = new Set();
@@ -82,17 +86,20 @@ export function assessSegment(segment, fragments = []) {
     if (fragment.terminal === true) { terminal = true; cursor = null; break; }
     cursor = fragment.next_page_key;
   }
-  if (!terminal) issues.push(visited.has(cursor) ? 'Pagination loop' : 'Terminal page not captured');
-  if (visited.size !== pages.size) issues.push('Unlinked pagination fragments');
+  if (!terminal) {
+    if (visited.has(cursor)) { issues.push('Pagination loop'); restartRequired = true; }
+    else issues.push('Terminal page not captured');
+  }
+  if (visited.size !== pages.size) { issues.push('Unlinked pagination fragments'); restartRequired = true; }
   const rows = ordered.flatMap(page => Array.isArray(page.rows) ? page.rows : []);
   const rowKey = row => segment.scope.dataset === 'transactions' ? row?.provider_event_id ?? row?.transaction_id ?? null : row?.player_id ?? row?.team_id ?? null;
   const keys = rows.map(rowKey).filter(Boolean);
-  if (new Set(keys).size !== keys.length) issues.push('Repeated row across pagination');
+  if (new Set(keys).size !== keys.length) { issues.push('Repeated row across pagination'); restartRequired = true; }
   const totals = fragments.map(fragment => fragment.reported_total_rows).filter(value => value != null);
-  if (terminal && totals.some(total => total !== rows.length)) issues.push('Visible row total mismatch');
-  if (segment.expected_team_ids && !equal(rows.map(row => row?.team_id).sort(), segment.expected_team_ids)) issues.push('Required teams or matchup pairing missing');
+  if (terminal && totals.some(total => total !== rows.length)) { issues.push('Visible row total mismatch'); restartRequired = true; }
+  if (segment.expected_team_ids && !equal(rows.map(row => row?.team_id).sort(), segment.expected_team_ids)) { issues.push('Required teams or matchup pairing missing'); restartRequired = true; }
   const uniqueIssues = [...new Set(issues)];
-  return { segment_id: segment.id, status: uniqueIssues.length ? 'partial' : 'complete', issues: uniqueIssues, rows: structuredClone(rows), evidence_ids: fragments.map(fragment => fragment.id), resume_page_key: terminal || uniqueIssues.some(issue => /mismatch|Repeated|loop|Unlinked|Invalid|Missing/.test(issue)) ? null : cursor || 'first' };
+  return { segment_id: segment.id, status: uniqueIssues.length ? 'partial' : 'complete', issues: uniqueIssues, rows: structuredClone(rows), evidence_ids: fragments.map(fragment => fragment.id), resume_page_key: terminal || restartRequired ? null : cursor || 'first' };
 }
 
 export function assessCoverage(plan, fragments = []) {
@@ -164,15 +171,16 @@ export function segmentObservation({ id, segment, fragments, source_id }) {
 }
 
 export function coverageOverview(records = []) {
+  const unknownCoverage = (observation_id, note) => ({ status: 'unknown', observation_id, datasets: coverageDatasets.map(dataset => ({ dataset, status: 'unknown', complete_segments: 0, expected_segments: null })), note });
   const latest = records.filter(record => record.kind === 'observation' && record.scope?.dataset === 'league_coverage' && record.data?.plan && Array.isArray(record.data?.fragments)).sort((a, b) => String(b.observed_at).localeCompare(String(a.observed_at)))[0];
-  if (!latest) return { status: 'unknown', observation_id: null, datasets: coverageDatasets.map(dataset => ({ dataset, status: 'unknown', complete_segments: 0, expected_segments: null })), note: 'Full-league segment routing and live seven-day pilot have not been verified.' };
+  if (!latest) return unknownCoverage(null, 'Full-league segment routing and live seven-day pilot have not been verified.');
   let result;
   try {
     const declared = createCoveragePlan(latest.data.plan);
     if (declared.league_id !== latest.scope.league_id || declared.season !== latest.scope.season || !equal(declared.segments, latest.data.plan.segments)) throw new Error('Coverage manifest scope mismatch');
     result = assessCoverage(declared, latest.data.fragments);
   } catch {
-    return { status: 'unknown', observation_id: latest.id, datasets: coverageDatasets.map(dataset => ({ dataset, status: 'unknown', complete_segments: 0, expected_segments: null })), note: 'Saved coverage manifest is invalid; its claims are excluded.' };
+    return unknownCoverage(latest.id, 'Saved coverage manifest is invalid; its claims are excluded.');
   }
   return { ...result, observation_id: latest.id, observed_at: latest.observed_at, note: 'Dataset completeness is scoped to this saved collection. It does not establish live pilot accuracy or freshness.' };
 }
