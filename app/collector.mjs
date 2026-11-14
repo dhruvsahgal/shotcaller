@@ -1,3 +1,4 @@
+import { assessSegment } from './coverage.mjs';
 import { canonicalDigest } from './store.mjs';
 import { extractRosterObservation, forcePartialReceipt } from './extract.mjs';
 
@@ -52,4 +53,25 @@ export async function collectBoundedRoster({ request, observe, limits: limitInpu
   }
 
   return forcePartialReceipt(lastExtracted, 'Collector step limit reached; coverage is incomplete.', inventory);
+}
+
+/** Full-league adapter seam: each invocation observes only one declared dataset segment. */
+export async function collectDatasetSegment({ segment, observe, fragments = [], limits: limitInput, now = () => Date.now() }) {
+  if (typeof observe !== 'function') throw new Error('Collector requires an observation function');
+  const limits = limitsOf(limitInput), started = now();
+  const captured = structuredClone(fragments);
+  let assessment = assessSegment(segment, captured);
+  if (assessment.status === 'complete' || assessment.resume_page_key === null) return { ...assessment, fragments: captured };
+  let tokens = 0;
+  for (let step = 0; step < limits.max_steps; step += 1) {
+    const fragment = await observe({ segment: structuredClone(segment), page_key: assessment.resume_page_key });
+    captured.push(fragment); tokens += estimatedTokens(fragment);
+    assessment = assessSegment(segment, captured);
+    if (tokens > limits.max_source_tokens || now() - started > limits.max_elapsed_ms) {
+      captured[captured.length - 1] = { ...fragment, status: 'partial' };
+      return { ...assessSegment(segment, captured), status: 'partial', issues: [...assessment.issues, 'Dataset collection budget exhausted'], fragments: captured };
+    }
+    if (assessment.status === 'complete' || assessment.resume_page_key === null) return { ...assessment, fragments: captured };
+  }
+  return { ...assessment, status: 'partial', issues: [...assessment.issues, 'Dataset step limit reached; resume this segment'], fragments: captured };
 }

@@ -1,3 +1,5 @@
+import { coverageOverview } from './coverage.mjs';
+import { marketEvidence } from './market.mjs';
 import { digest } from './store.mjs';
 import { countKeys, categoryKeys } from './schema.mjs';
 import { historicalShapeError } from './import-validation.mjs';
@@ -191,6 +193,8 @@ export function buildOverview(records = [], decisions = [], leagueId = null, obs
   if (recommendationEntry) gaps.push('The displayed recommendation is saved reasoning from its observation date, not a newly evaluated or executed move.');
 
   return {
+    dataset_coverage: coverageOverview([...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId))),
+    market_evidence: marketEvidence([...entries.map(entry => entry.record), ...[...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId))]),
     sources, matchup: matchupHistory[0] ?? null, matchup_history: matchupHistory, observations: observationOverview([...scopedObservations.values()], leagueId),
     lineups: lineupMeta ? { meta: lineupMeta, days: [...lineupDays.values()].sort((a, b) => a.date.localeCompare(b.date)) } : null,
     roster, team_log: teamLog, league, waivers, transactions: [...transactions.values()],
