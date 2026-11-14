@@ -154,3 +154,28 @@ test('undated moves remain separate observations and distinct provider events ne
   assert.equal(buildOverview([wrap('events',{recent_transactions:[{...dated,transaction_id:'x'},{...dated,transaction_id:'y'}]})]).transactions.length,2);
   assert.equal(buildOverview([wrap('a',{recent_transactions:[{...dated,transaction_id:'x'}]}),wrap('b',{recent_transactions:[{...dated,transaction_id:'x'}]})]).transactions.length,1);
 });
+
+test('scoped observations keep teams and scoring periods separate', () => {
+  const scoped = (id, teamId, period, observedAt, points) => ({
+    schema_version: 1, kind: 'observation', id, stored_at: `${observedAt.slice(0, 10)}T23:00:00Z`,
+    observed_at: observedAt, coverage: { status: 'complete', note: 'fixture' },
+    scope: {
+      dataset: 'daily_lineup', league_id: '123', season: '2026', team_id: teamId, matchup_id: null,
+      scoring_period: { kind: period.includes('-') ? 'date' : 'week', key: period, timezone: 'America/Los_Angeles' },
+      value_basis: { value: 'actual', aggregation: 'snapshot' }
+    },
+    data: { points }
+  });
+  const records = [
+    scoped('team-a-current', 'team-a', '2026-11-14', '2026-11-14T12:00:00Z', 10),
+    scoped('team-b-same-date', 'team-b', '2026-11-14', '2026-11-14T12:05:00Z', 20),
+    scoped('week-4', 'team-a', '4', '2026-11-10T12:00:00Z', 40),
+    scoped('old-week-observed-later', 'team-a', '3', '2026-11-14T13:00:00Z', 30)
+  ];
+  const output = buildOverview([], [], '123', records);
+  assert.equal(output.observations.scopes.length, 4);
+  assert.equal(output.observations.scopes.find(row => row.scope.team_id === 'team-a' && row.scope.scoring_period.key === '2026-11-14').current.id, 'team-a-current');
+  assert.equal(output.observations.scopes.find(row => row.scope.team_id === 'team-b').current.id, 'team-b-same-date');
+  assert.equal(output.observations.scopes.find(row => row.scope.scoring_period.key === '4').current.id, 'week-4');
+  assert.equal(buildOverview(records, [], '123').observations.scopes.length, 4);
+});

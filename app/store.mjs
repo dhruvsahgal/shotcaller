@@ -2,14 +2,16 @@ import { mkdir, readFile, readdir, rename, writeFile, rm, open } from 'node:fs/p
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { historicalShapeError } from './import-validation.mjs';
+import { validateIdentifier } from './schema.mjs';
+import { compareObservations, observationEnvelope, observationScopeKey } from './observations.mjs';
+import { attemptEnvelope, runEnvelope } from './runs.mjs';
 
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : plainObject(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 export const canonicalDigest = value => digest(canonical(value));
 export function safeId(id) {
-  if (typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id)) throw new Error('Invalid identifier');
-  return id;
+  return validateIdentifier(id);
 }
 export async function atomicJSON(file, value) {
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -22,7 +24,7 @@ export class Store {
   constructor(root) { this.root = root; this.initializing = null; }
   async init() {
     if (!this.initializing) {
-      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
+      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
     }
     await this.initializing;
   }
@@ -57,6 +59,52 @@ export class Store {
     if (invalid) throw new Error(invalid);
     const hash = digest(payload);
     return this.publish({ schema_version: 2, id: `import-${hash.slice(0, 24)}`, kind: 'historical_import', status: 'historical', stored_at: new Date().toISOString(), content_hash: hash, payload });
+  }
+  async saveRun(input) {
+    const contentHash = canonicalDigest(input);
+    return this.publish(runEnvelope(input, new Date().toISOString(), contentHash), 'runs');
+  }
+  async saveRunAttempt(input) {
+    try { await this.read(input?.run_id, 'runs'); }
+    catch (error) { if (error.code === 'ENOENT') throw new Error('Run attempt references an unknown run'); throw error; }
+    const contentHash = canonicalDigest(input);
+    return this.publish(attemptEnvelope(input, new Date().toISOString(), contentHash), 'attempts');
+  }
+  async saveObservation(input) {
+    if (input?.correction_of != null) {
+      try { await this.read(input.correction_of, 'observations'); }
+      catch (error) { if (error.code === 'ENOENT') throw new Error('Observation correction references an unknown record'); throw error; }
+    }
+    const contentHash = canonicalDigest(input);
+    const record = await this.publish(observationEnvelope(input, new Date().toISOString(), contentHash), 'observations');
+    await this.rebuildObservationIndex();
+    return record;
+  }
+  async rebuildObservationIndex() {
+    const complete = new Map();
+    for (const record of await this.list('observations')) {
+      if (record.coverage?.status !== 'complete') continue;
+      const key = observationScopeKey(record.scope);
+      const previous = complete.get(key);
+      if (!previous || compareObservations(record, previous) > 0) complete.set(key, record);
+    }
+    const index = {
+      schema_version: 1,
+      complete: Object.fromEntries([...complete.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, record]) => [key, {
+        id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash
+      }]))
+    };
+    await this.init();
+    await atomicJSON(join(this.root, 'indexes', 'complete-observations.json'), index);
+    return index;
+  }
+  async observationIndex() {
+    try { return JSON.parse(await readFile(join(this.root, 'indexes', 'complete-observations.json'), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return this.rebuildObservationIndex(); throw error; }
+  }
+  async completeObservation(scope) {
+    const pointer = (await this.observationIndex()).complete[observationScopeKey(scope)];
+    return pointer ? this.read(pointer.id, 'observations') : null;
   }
   async read(id, folder = 'snapshots') {
     return JSON.parse(await readFile(join(this.root, folder, safeId(id), 'snapshot.json'), 'utf8'));
