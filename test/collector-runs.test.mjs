@@ -35,16 +35,49 @@ test('SGT due slots are durable, paused by default and catch up only latest miss
   assert.equal((await runs.status()).alerts[0].outcome, 'timed_out');
 });
 
-test('manual and scheduled intentions reuse identity; trigger failure is a terminal alert', async () => {
+test('manual intentions reuse identity and a refused launch can retry the same run', async () => {
   const h = await harness();
   const manual = await h.runs.runNow({ scope, intended_for: h.run.intended_for });
   assert.equal(manual.run.id, h.run.id); assert.equal(manual.run.idempotency_key, h.run.idempotency_key);
   assert.equal(manual.launch.status, 'supervised_upload');
   assert.equal((await h.store.list('runs')).length, 1);
   Object.assign(h.config, { collectorGatesVerified: true, boxesRunUrl: 'https://boxes.dev/test/run', boxesSecret: 'secret', boxesThreadId: 'thread' });
-  const runs = new CollectorRuns(h.config, h.store, { ...h.options, fetcher: async () => { throw new Error('provider secret detail'); } });
+  let calls = 0;
+  const runs = new CollectorRuns(h.config, h.store, { ...h.options, fetcher: async () => ++calls === 1 ? { status: 503 } : { status: 202, json: async () => ({ status: 'starting' }) } });
   const newer = await runs.create({ scope, intended_for: '2026-11-14T10:01:00Z' });
   assert.equal((await runs.dispatch(newer)).outcome, 'failed');
-  const status = await runs.status(); assert.equal(status.alerts.length, 1);
-  assert.equal(JSON.stringify(status).includes('provider secret detail'), false);
+  const accepted = await runs.dispatch(newer);
+  assert.equal(accepted.status, 'awaiting_artifacts');
+  assert.equal(calls, 2);
+  const status = await runs.status();
+  assert.equal(status.alerts.length, 1);
+  assert.equal(status.unresolved_run.run_id, newer.id);
+  assert.equal(status.unresolved_run.status, 'awaiting_artifacts');
+  assert.notEqual(accepted.attempt_id, status.alerts[0].id);
+});
+
+test('ambiguous dispatch is durable and blocks duplicates until reconciled', async () => {
+  const h = await harness();
+  Object.assign(h.config, { collectorGatesVerified: true, boxesRunUrl: 'https://boxes.dev/test/run', boxesSecret: 'secret', boxesThreadId: 'thread' });
+  let calls = 0, runs;
+  runs = new CollectorRuns(h.config, h.store, { ...h.options, fetcher: async () => {
+    calls++;
+    const pending = await runs.unresolvedReceipt();
+    assert.equal(pending.receipt.status, 'dispatching');
+    if (calls === 1) throw new Error('connection reset after request write');
+    return { status: 202, json: async () => ({ status: 'thread_ready' }) };
+  } });
+  const run = await runs.create({ scope, intended_for: '2026-11-14T10:02:00Z' });
+  const result = await runs.dispatch(run);
+  assert.equal(result.status, 'reconciliation_required');
+  assert.equal((await runs.status()).unresolved_run.status, 'reconciliation_required');
+  await assert.rejects(runs.dispatch(run), /must reconcile/);
+  assert.equal(calls, 1);
+  const settlement = await runs.reconcile(run.id, { outcome: 'failed', reason: 'Confirmed no automation thread was created.' });
+  assert.notEqual(settlement.id, result.attempt_id);
+  assert.equal((await runs.status()).unresolved_run, null);
+  const accepted = await runs.dispatch(run);
+  assert.equal(accepted.status, 'awaiting_artifacts');
+  assert.equal(calls, 2);
+  assert.notEqual(accepted.attempt_id, result.attempt_id);
 });

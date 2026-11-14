@@ -52,6 +52,7 @@ function showTab(id) {
 }
 function renderState() {
   renderOverview(state.overview, id => attempt(async () => { if (state.decisions.some(d => d.id === id)) { showTab('decisions'); return; } showTab('evidence'); await selectSnapshot(id); }));
+  renderIntelligence();
   $('league-id').textContent = state.league_id;
   const latest = state.snapshots.find(s => s.id === state.latest_id);
   $('freshness').textContent = latest ? `Latest complete capture: ${latest.observed_at}. Check its period before making a move.` : 'Saved observations consolidated below · no complete automated Yahoo capture yet.';
@@ -96,15 +97,67 @@ function renderState() {
   $('prompt-hash').textContent = state.prompt.hash || state.prompt.error;
   $('prompt-text').textContent = state.prompt.text || '';
 }
+function evidenceLine(ids = []) { return ids.length ? ids.join(', ') : 'No linked source IDs'; }
+function ageLine(value) { const age = Date.now() - Date.parse(value); return Number.isFinite(age) && age >= 0 ? `${(age / 3600000).toFixed(1)} hours old` : 'Age unknown'; }
+function renderIntelligence() {
+  const intel = state.intelligence || {}, target = $('matchup-intelligence'); target.replaceChildren();
+  const forecast = state.forecast;
+  const summary = node('div', null, 'metrics');
+  const metric = (value, label) => { const box = node('div', null, 'metric'); box.append(node('strong', display(value)), node('span', label)); summary.append(box); };
+  metric(forecast ? `Week ${forecast.week}` : '—', 'Latest frozen forecast');
+  metric(forecast?.matchups?.length ?? 0, 'League matchups projected');
+  metric(intel.optimization?.recommendation?.acquisitions_reserved ?? '—', 'Acquisitions reserved');
+  metric(intel.evaluation_summary?.independent_validation_weeks ?? 0, 'Independent validation weeks');
+  target.append(summary);
+  if (forecast?.matchups?.length) {
+    const card = node('article', null, 'panel'); card.append(node('h3', 'All matchup forecasts'), node('p', `Created ${forecast.created_at} · ${forecast.status}. Sources: ${evidenceLine(forecast.source_snapshot_ids || intel.forecasts?.[0]?.source_snapshot_ids || [])}`, 'mono'));
+    card.append(table(['Matchup', 'Projected leader', 'Swingability', 'Swing categories'], forecast.matchups.map(row => [row.id, row.projected_leader || 'Unresolved', row.stability?.label || 'Unknown', Object.entries(row.category_outcomes || {}).filter(([, value]) => value === 'swing' || value === 'unknown').map(([key]) => key.toUpperCase()).join(', ') || 'None']))); target.append(card);
+  } else target.append(node('p', 'No frozen league forecast yet.', 'empty'));
+  if (intel.optimization) {
+    const optimization = node('article', null, 'panel'), rec = intel.optimization.recommendation;
+    optimization.append(node('h3', 'Optionality plan'), node('p', `${rec.kind.replaceAll('_', ' ')} · score ${rec.score} · uses ${rec.acquisitions_used}, reserves ${rec.acquisitions_reserved} · claim risk ${rec.comparison?.claim_risk ?? '—'}.`), node('p', `Status: ${intel.optimization.execution_status}. Sources: ${evidenceLine(intel.optimization.source_snapshot_ids)}`, 'mono'));
+    if (intel.optimization.fallbacks?.length) optimization.append(table(['Alternative', 'Moves', 'Score'], intel.optimization.fallbacks.map(row => [row.id, row.opportunity_ids.join(', ') || 'Hold', row.score])));
+    if (intel.optimization.next_reconsideration) optimization.append(node('p', `${intel.optimization.next_reconsideration.at || 'On evidence change'} · ${intel.optimization.next_reconsideration.reason}`, 'caveat'));
+    target.append(optimization);
+  }
+  if (intel.evaluation) {
+    const evaluation = node('article', null, 'panel'); evaluation.append(node('h3', `${intel.evaluation.status.toUpperCase()} forecast evaluation`), node('p', `Correlation: ${intel.evaluation.correlation_key}. ${intel.evaluation_summary.origins} forecast origin(s) across ${intel.evaluation_summary.independent_validation_weeks} independent finalized week(s).`), node('p', `Sources: ${evidenceLine(intel.evaluation.source_snapshot_ids)}`, 'mono')); target.append(evaluation);
+  }
+  if (intel.report) {
+    const report = node('article', null, 'panel'); report.append(node('h3', `Week ${intel.report.week} ${intel.report.status} review`), node('p', `${intel.report.finalized_matchups}/${intel.report.expected_matchups} matchups final · ${intel.report.lost_starts.total} lost usable starts · ${intel.report.decision_review.verified.length} verified decision action(s).`), node('p', `Sources: ${evidenceLine(intel.report.source_snapshot_ids)}`, 'mono'));
+    if (intel.report.caveats?.length) report.append(node('p', intel.report.caveats.join(' '), 'caveat'));
+    if (intel.report.recap) report.append(node('p', 'League recap is a draft and has not been authorized for sending.', 'caveat'));
+    target.append(report);
+  }
+  const operations = $('operations-intelligence'); operations.replaceChildren();
+  const latest = state.snapshots.find(row => row.id === state.latest_id);
+  operations.append(table(['Control', 'State', 'Evidence'], [
+    ['Yahoo refresh', state.refresh.status, state.refresh.detail],
+    ['Latest complete capture', latest?.observed_at ? ageLine(latest.observed_at) : 'None', latest ? `${latest.observed_at} · ${latest.id}` : 'No complete pointer'],
+    ['Master prompt', state.prompt.ready ? 'Ready' : 'Blocked', state.prompt.hash || state.prompt.error],
+    ['Decision model', state.model_configured ? 'Configured' : 'Not configured', 'Recommendations remain advice only'],
+    ['Model call budget', `${state.operations?.model_usage?.remaining ?? '—'} remaining`, `${state.operations?.model_usage?.attempted ?? 0}/${state.operations?.model_usage?.limit ?? '—'} reserved or attempted · ${state.operations?.model_usage?.actual?.total_tokens ?? 0} reported tokens`],
+    ['Private volume', `${state.operations?.storage?.files ?? 0} files`, `${state.operations?.storage?.bytes ?? 0} bytes${state.operations?.storage?.quota_used_percent == null ? ' · quota not configured' : ` · ${state.operations.storage.quota_used_percent}% of configured quota`}`],
+    ['Action executor', state.actions?.mode || 'shadow', state.actions?.gates_verified ? `Enabled classes: ${state.actions.enabled_classes.join(', ') || 'none'}` : 'External pilot gates are unverified'],
+    ['Stop switch', state.actions?.control?.stop_switch ? 'ACTIVE' : 'Released', state.actions?.control?.human_takeover ? 'Human takeover is active' : 'No human takeover recorded'],
+    ['Live roster mutations', state.actions?.mode === 'live' && state.actions?.gates_verified ? 'Class bounded' : 'Disabled', 'Each live action still requires a dedicated one-time manager authorization']
+  ]));
+  if (state.actions?.intents?.length) operations.append(node('h3', 'Action intents'), table(['Class', 'Mode', 'Scoring date', 'Expires'], state.actions.intents.slice(0, 10).map(row => [row.action_class, row.execution_mode, row.scoring_date, row.expires_at])));
+  if (state.overview?.gaps?.length) operations.append(node('h3', 'Coverage gaps'), ...state.overview.gaps.map(gap => node('p', gap, 'caveat')));
+}
 async function load() {
   state = await api('state'); renderState();
   if (!selected && state.snapshots.length) await selectSnapshot(state.latest_id || state.snapshots[0].id);
   clearTimeout(poll);
   if (state.refresh.status === 'running') poll = setTimeout(() => attempt(load), 2000);
 }
-$('login-form').addEventListener('submit', e => { e.preventDefault(); attempt(async () => { token = $('token').value.trim(); await load(); await loadSetup(); $('token').value = ''; $('login').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; }); });
+async function loadOperations() {
+  state.operations = { ...(state.operations || {}), ...await api('operations') };
+  renderIntelligence();
+}
+$('login-form').addEventListener('submit', e => { e.preventDefault(); attempt(async () => { token = $('token').value.trim(); await load(); await Promise.all([loadSetup(), loadOperations()]); $('token').value = ''; $('login').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; }); });
 $('logout').addEventListener('click', () => { token = ''; location.reload(); });
-document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => { showTab(button.dataset.tab); }));
+document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => { showTab(button.dataset.tab); if (button.dataset.tab === 'setup') void attempt(loadOperations); }));
 $('refresh').addEventListener('click', () => attempt(async () => { await api('refresh', {}); await load(); }));
 async function loadSetup() {
   const settings = await api('setup');
@@ -137,7 +190,7 @@ $('collector-run').addEventListener('click', () => attempt(async () => {
   try {
     const result = await api('collector/run', { intended_for: pendingCollectorTime, dispatch: collector.gates_verified && collector.trigger_configured });
     if (['awaiting_artifacts', 'supervised_upload'].includes(result.launch.status)) pendingCollectorTime = null;
-    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : result.launch.outcome === 'failed' ? 'Launch failed; retry will preserve this logical run.' : 'Launch acceptance is not evidence of completed capture.'}`;
+    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : result.launch.status === 'reconciliation_required' ? 'The dispatch result is ambiguous; reconcile it before retrying so the collector cannot launch twice.' : result.launch.outcome === 'failed' ? 'Launch failed; retry will preserve this logical run.' : 'Launch acceptance is not evidence of completed capture.'}`;
   } finally { await loadCollector(); }
 }));
 $('collector-pause').addEventListener('click', () => attempt(async () => { await api('collector/settings', { paused: !collector.paused }); await loadCollector(); }));

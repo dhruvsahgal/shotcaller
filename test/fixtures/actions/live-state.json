@@ -1,0 +1,18 @@
+{
+  "league_id": "123",
+  "scoring_date": "2026-11-14",
+  "roster_player_ids": ["p1", "drop1"],
+  "started_player_ids": [],
+  "locked_player_ids": [],
+  "slots": { "p1": "BN", "drop1": "Util" },
+  "eligible_slots": { "p1": ["PG", "Util"] },
+  "injury_eligible_player_ids": ["p1"],
+  "open_il_slots": 1,
+  "available_player_ids": ["add1"],
+  "acquisitions_used": 0,
+  "acquisitions_allowed": 2,
+  "max_roster_size": 2,
+  "visible_offer_id": "offer1",
+  "offer_open": true,
+  "preconditions": { "roster_version": "v1" }
+}

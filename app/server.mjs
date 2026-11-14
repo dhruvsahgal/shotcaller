@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store, atomicJSON } from './store.mjs';
-import { configuration } from './config.mjs';
+import { configuration, rotatedCredentialConfiguration } from './config.mjs';
 import { analyze } from './analysis.mjs';
 import { buildOverview } from './overview.mjs';
 import { historicalShapeError } from './import-validation.mjs';
@@ -14,6 +14,12 @@ import { loadSettings, saveSettings, setupStatus, saveYahooState } from './setup
 import { buildForecast, validateForecastInput } from './forecast.mjs';
 import { CollectorRuns } from './collector-runs.mjs';
 import { CollectorIngest, ingestLimits } from './ingest.mjs';
+import { optimizePlans } from './optimize.mjs';
+import { evaluateForecast, summarizeEvaluations } from './evaluate.mjs';
+import { buildWeeklyReport } from './reports.mjs';
+import { estimateClaimRisk, screenTrades } from './opponents.mjs';
+import { ActionService } from './actions.mjs';
+import { archiveManifest, ModelUsageLedger, RotatingCredential, storageHealth } from './health.mjs';
 
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/overview.js': ['overview.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
 function authorized(req, token = '') {
@@ -33,6 +39,10 @@ async function bytes(req, limit) {
   }
   return Buffer.concat(parts);
 }
+async function readEvidence(store, id) {
+  try { return await store.read(id); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; return store.read(id, 'observations'); }
+}
 export async function createApp(config, options = {}) {
   if (config.token.length < 24) throw new Error('APP_TOKEN must contain at least 24 characters');
   const store = options.store || new Store(config.dataDir);
@@ -40,6 +50,21 @@ export async function createApp(config, options = {}) {
   await loadSettings(config);
   const collectorRuns = new CollectorRuns(config, store, options.collectorOptions);
   const ingest = new CollectorIngest(config, store, options.collectorOptions);
+  const actionEvidenceValidator = async ({ ids, phase, intent_id, attempt_id }) => {
+    if (phase === 'source') {
+      await Promise.all(ids.map(id => readEvidence(store, id)));
+      return;
+    }
+    const expectedPhase = phase === 'readback-after' ? 'after' : 'before';
+    for (const id of ids) {
+      const evidence = await store.read(id, 'action-evidence');
+      if (evidence.intent_id !== intent_id || evidence.phase !== expectedPhase) throw new Error('Invalid action evidence ownership');
+      if (expectedPhase === 'after' && evidence.attempt_id !== attempt_id) throw new Error('Invalid action evidence attempt binding');
+    }
+  };
+  const actions = new ActionService(config, store, { ...options.actionOptions, evidenceValidator: options.actionOptions?.evidenceValidator ?? actionEvidenceValidator });
+  const usage = new ModelUsageLedger(config.dataDir, config.modelCallBudget);
+  const collectorCredential = new RotatingCredential(config.dataDir, config.collectorToken);
   await collectorRuns.settings();
   let refresh = { status: 'idle', detail: 'No refresh in this process', updated_at: null };
   try {
@@ -61,8 +86,33 @@ export async function createApp(config, options = {}) {
         const [file, type] = assets[url.pathname];
         res.writeHead(200, { 'Content-Type': type }); return res.end(await readFile(new URL(`../public/${file}`, import.meta.url)));
       }
+      const actionId = /^\/api\/(?:executor\/)?actions\/([^/]+)(?:\/(authorize|prepare|arm|readback|dispatch|control))?$/.exec(url.pathname);
+      const actionEvidenceId = /^\/api\/executor\/actions\/([^/]+)\/evidence$/.exec(url.pathname);
+      if (actionId && actionId[2] === 'authorize' && req.method === 'POST') {
+        if (!authorized(req, config.approvalToken)) return send(401, { error: 'Dedicated manager approval credential required' });
+        return send(201, await actions.authorize(decodeURIComponent(actionId[1]), await body(req)));
+      }
+      if (url.pathname === '/api/actions/control' && req.method === 'POST') {
+        if (!authorized(req, config.approvalToken)) return send(401, { error: 'Dedicated manager approval credential required' });
+        return send(200, await actions.setControl(await body(req)));
+      }
+      if (actionId && url.pathname.startsWith('/api/executor/actions/')) {
+        if (!authorized(req, config.executorToken)) return send(401, { error: 'Dedicated executor credential required' });
+        const id = decodeURIComponent(actionId[1]);
+        if (!actionId[2] && req.method === 'GET') return send(200, await actions.package(id));
+        if (actionId[2] === 'prepare' && req.method === 'POST') return send(200, await actions.prepare(id, await body(req)));
+        if (actionId[2] === 'arm' && req.method === 'POST') return send(200, await actions.arm(id, await body(req)));
+        if (actionId[2] === 'readback' && req.method === 'POST') return send(201, await actions.readback(id, await body(req)));
+        return send(405, { error: 'Executor method not allowed' });
+      }
+      if (actionEvidenceId) {
+        if (!authorized(req, config.executorToken)) return send(401, { error: 'Dedicated executor credential required' });
+        if (req.method !== 'POST') return send(405, { error: 'Executor evidence method not allowed' });
+        return send(201, await actions.saveEvidence(decodeURIComponent(actionEvidenceId[1]), await body(req, 1_500_000)));
+      }
       if (url.pathname === '/api/collector/capabilities' && req.method === 'POST') {
-        if (!authorized(req, config.token) && !authorized(req, config.collectorToken)) return send(401, { error: 'Collector broker authentication required' });
+        const collectorSupplied = (req.headers.authorization || '').replace(/^Bearer /, '');
+        if (!authorized(req, config.token) && !await collectorCredential.authenticate(collectorSupplied)) return send(401, { error: 'Collector broker authentication required' });
         return send(201, await ingest.mint(await body(req)));
       }
       if (['/api/collector/manifest', '/api/collector/commit', '/api/collector/readback'].includes(url.pathname) || /^\/api\/collector\/artifacts\/[^/]+$/.test(url.pathname)) {
@@ -83,9 +133,44 @@ export async function createApp(config, options = {}) {
         return send(405, { error: 'Collector method not allowed' });
       }
       if (!authorized(req, config.token)) return send(401, { error: 'Enter your ShotCaller access token' });
+      if (req.method === 'GET' && url.pathname === '/api/actions') return send(200, await actions.status());
+      if (req.method === 'GET' && url.pathname === '/api/operations') {
+        const [storage, model_usage, collector_credential, collector] = await Promise.all([storageHealth(config.dataDir, config.dataQuotaBytes), usage.status(), collectorCredential.status(), collectorRuns.status()]);
+        return send(200, { storage, model_usage, collector_credential, collector });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/operations/backup-manifest') return send(201, await archiveManifest(config.dataDir));
+      if (req.method === 'POST' && url.pathname === '/api/operations/collector-token') {
+        const next = rotatedCredentialConfiguration(config, 'collectorToken', (await body(req)).token);
+        const status = await collectorCredential.rotate(next.collectorToken);
+        config.collectorToken = next.collectorToken;
+        return send(200, status);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/actions') {
+        const input = await body(req, 128000);
+        await Promise.all((input.source_snapshot_ids || []).map(id => readEvidence(store, id)));
+        return send(201, await actions.propose(input));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/opponents/claim-risk') {
+        const input = await body(req, 128000);
+        return send(200, estimateClaimRisk(input.profile, input.categories, input.scarcity));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/trades/screen') {
+        const input = await body(req, 256000);
+        await Promise.all((input.candidates || []).flatMap(candidate => candidate.source_ids || []).map(id => readEvidence(store, id)));
+        return send(200, screenTrades(input));
+      }
+      if (actionId && actionId[2] === 'dispatch' && req.method === 'POST') return send(202, await actions.dispatch(decodeURIComponent(actionId[1])));
+      if (req.method === 'POST' && url.pathname === '/api/actions/stop') {
+        const current = await actions.control();
+        return send(200, await actions.setControl({ stop_switch: true, human_takeover: current.human_takeover }));
+      }
       if (req.method === 'GET' && url.pathname === '/api/collector') return send(200, await collectorRuns.status());
       if (req.method === 'POST' && url.pathname === '/api/collector/settings') return send(200, await collectorRuns.configure(await body(req)));
       if (req.method === 'POST' && url.pathname === '/api/collector/run') return send(201, await collectorRuns.runNow(await body(req)));
+      if (req.method === 'POST' && url.pathname === '/api/collector/reconcile') {
+        const input = await body(req);
+        return send(201, await collectorRuns.reconcile(input.run_id, input));
+      }
       if (req.method === 'GET' && url.pathname === '/api/setup') return send(200, await setupStatus(config));
       if (req.method === 'POST' && ['/api/setup', '/api/setup/yahoo', '/api/import'].includes(url.pathname)) {
         if (refreshing || deciding || configuring) return send(409, { error: 'Wait for the current operation to finish' });
@@ -103,11 +188,19 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
-        const [records, observations, decisions, latestForecast, latest, prompt] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.latestForecast(), store.latest(), promptRead]);
-        const overview = buildOverview(records, decisions, config.leagueId, observations);
-        const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
+        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.recent('forecasts', 25), store.recent('optimizations', 1), store.recent('evaluations', 25), store.recent('reports', 25), store.latestForecast(), store.latest(), promptRead, actions.status({ limit: 10 }), usage.status()]);
+        const intelligence = {
+          forecasts: forecasts.map(row => ({ id: row.id, created_at: row.created_at, status: row.status, source_snapshot_ids: row.source_snapshot_ids, week: row.forecast.week })),
+          optimization: optimizations[0]?.optimization || null,
+          evaluation: evaluations[0]?.evaluation || null,
+          evaluation_summary: summarizeEvaluations(evaluations),
+          report: reports[0]?.report || null,
+          reports: reports.map(row => ({ id: row.id, stored_at: row.stored_at, status: row.report.status, week: row.report.week, correction_of: row.report.correction_of, source_snapshot_ids: row.report.source_snapshot_ids }))
+        };
+        const overview = buildOverview(records, decisions, config.leagueId, observations, intelligence);
+        const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, source_snapshot_ids: latestForecast.source_snapshot_ids, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
         const evidence = [...records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload)), ...observations];
-        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, decisions });
+        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, intelligence, actions: actionState, operations: { model_usage: modelUsage }, decisions });
       }
       if (req.method === 'GET' && /^\/api\/snapshots\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1))));
       if (req.method === 'GET' && /^\/api\/forecasts\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1)), 'forecasts'));
@@ -122,6 +215,58 @@ export async function createApp(config, options = {}) {
           if (sourceLeague == null || String(sourceLeague) !== String(config.leagueId)) return send(400, { error: 'Forecast source is not scoped to this league' });
         }
         return send(201, await store.saveForecast(buildForecast(input)));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/optimizations') {
+        const input = await body(req, 2097152);
+        if (input.forecast_input?.league_id !== config.leagueId) return send(400, { error: 'Optimization league does not match this ShotCaller instance' });
+        const sources = await Promise.all((input.forecast_input?.source_snapshot_ids || []).map(id => store.read(id)));
+        for (const source of sources) {
+          const sourceLeague = source.league_id ?? source.payload?.league_id;
+          if (sourceLeague == null || String(sourceLeague) !== String(config.leagueId)) return send(400, { error: 'Optimization source is not scoped to this league' });
+        }
+        return send(201, await store.saveOptimization(optimizePlans(input)));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/evaluations') {
+        const input = await body(req, 1048576);
+        const [forecastRecord, baselineRecord] = await Promise.all([
+          store.read(input.forecast_id, 'forecasts'),
+          input.baseline_forecast_id ? store.read(input.baseline_forecast_id, 'forecasts') : null,
+          Promise.all((input.outcome?.source_snapshot_ids || []).map(id => readEvidence(store, id)))
+        ]);
+        if (String(forecastRecord.forecast.league_id) !== String(config.leagueId)) return send(400, { error: 'Evaluation league does not match this ShotCaller instance' });
+        const evaluation = evaluateForecast({ forecast_record: forecastRecord, baseline_record: baselineRecord, outcome: input.outcome, correction_of: input.correction_of || null });
+        return send(201, await store.saveEvaluation(evaluation));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/reports') {
+        const input = await body(req, 2097152);
+        if (String(input.league_id) !== String(config.leagueId)) return send(400, { error: 'Report league does not match this ShotCaller instance' });
+        const forecastRecord = input.forecast_id ? await store.read(input.forecast_id, 'forecasts') : await store.latestForecast();
+        const frozen = forecastRecord?.forecast;
+        const samePeriod = frozen && String(frozen.league_id) === String(config.leagueId) && String(frozen.season) === String(input.season) && frozen.week === input.week;
+        const decisionIds = [...new Set([...(input.decision_ids || []), ...(input.decisions || []).map(row => row?.id)].filter(Boolean))];
+        const evaluationIds = [...new Set([...(input.evaluation_ids || []), ...(input.evaluations || []).map(row => row?.id)].filter(Boolean))];
+        const [decisions, evaluations, intents, outcomes, reconciliations, seasonIndex] = await Promise.all([
+          Promise.all(decisionIds.map(id => store.read(id, 'decisions'))),
+          Promise.all(evaluationIds.map(id => store.read(id, 'evaluations'))),
+          store.list('action-intents'), store.list('action-outcomes'), store.list('action-reconciliations'), store.seasonReportIndex(input.season)
+        ]);
+        const latestOutcomes = new Map();
+        for (const row of [...outcomes, ...reconciliations].sort((a, b) => String(a.recorded_at).localeCompare(String(b.recorded_at)))) latestOutcomes.set(row.attempt_id, row);
+        const outcomeByIntent = new Map([...latestOutcomes.values()].filter(row => row.outcome === 'applied' && !row.requires_reconciliation).map(row => [row.intent_id, row]));
+        const decisionActionLinks = intents.filter(row => row.decision_id && outcomeByIntent.has(row.id)).map(row => ({ decision_id: row.decision_id, intent_id: row.id, outcome_id: outcomeByIntent.get(row.id).id }));
+        const seasonHistory = await Promise.all(seasonIndex.reports.map(row => store.read(row.id, 'reports')));
+        const previousReport = seasonHistory.filter(row => row.report.week < input.week).at(-1) || null;
+        const recapId = input.recap_decision_id || input.recap_decision?.id || null;
+        const recapDecision = recapId ? await store.read(recapId, 'decisions') : null;
+        const trustedEvaluation = evaluations.map(row => row.evaluation).find(row => row.forecast_id === forecastRecord?.id && String(row.league_id) === String(config.leagueId) && String(row.season) === String(input.season) && row.week === input.week && ['final', 'partial'].includes(row.status));
+        const report = buildWeeklyReport({ ...input, matchups: trustedEvaluation?.verified_outcome_matchups || [], decisions, evaluations, recap_decision: recapDecision }, {
+          frozen_matchup_topology: samePeriod ? frozen.matchups.map(row => ({ id: row.id, team_ids: row.team_ids })) : [],
+          matchup_topology_source_id: samePeriod ? forecastRecord.id : null,
+          action_outcomes: [...latestOutcomes.values()], decision_action_links: decisionActionLinks,
+          season_history_ids: seasonHistory.map(row => row.id), previous_report_id: previousReport?.id || null
+        });
+        await Promise.all(report.source_snapshot_ids.map(id => readEvidence(store, id)));
+        return send(201, await store.saveReport(report));
       }
       if (req.method === 'POST' && url.pathname === '/api/refresh') {
         if (refreshing || configuring) return send(409, { error: 'A refresh or setup change is already running' });

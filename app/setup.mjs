@@ -2,7 +2,7 @@ import { access, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicJSON } from './store.mjs';
 
-const fields = ['leagueId', 'expectedTeams', 'model', 'endpoint', 'apiKey', 'cdpUrl'];
+const fields = ['leagueId', 'expectedTeams', 'modelCallBudget', 'model', 'endpoint', 'apiKey', 'cdpUrl'];
 export async function loadSettings(config) {
   try {
     const saved = JSON.parse(await readFile(join(config.dataDir, 'settings.json'), 'utf8'));
@@ -15,6 +15,7 @@ export async function saveSettings(config, patch, hasEvidence) {
   if (typeof next.leagueId !== 'string' || !/^\d{1,12}$/.test(next.leagueId)) throw new Error('Invalid league ID');
   if (hasEvidence && next.leagueId !== config.leagueId) throw new Error('Invalid league change: this volume already contains league evidence');
   if (!Number.isInteger(next.expectedTeams) || next.expectedTeams < 2 || next.expectedTeams > 30) throw new Error('Invalid team count');
+  if (!Number.isInteger(next.modelCallBudget) || next.modelCallBudget < 1 || next.modelCallBudget > 10000) throw new Error('Invalid model call budget');
   for (const key of ['model', 'endpoint', 'apiKey', 'cdpUrl']) if (typeof next[key] !== 'string' || next[key].length > 4096) throw new Error('Invalid connection setting');
   let endpoint;
   try { endpoint = new URL(next.endpoint); } catch { throw new Error('Invalid model endpoint'); }
@@ -30,7 +31,7 @@ export async function saveSettings(config, patch, hasEvidence) {
 export async function setupStatus(config) {
   let sessionSaved = false;
   try { await access(join(config.dataDir, 'auth', 'yahoo.json')); sessionSaved = true; } catch {}
-  return { league_id: config.leagueId, expected_teams: config.expectedTeams, model: config.model, endpoint: config.endpoint, api_key_saved: Boolean(config.apiKey), remote_browser_saved: Boolean(config.cdpUrl), yahoo_session_saved: sessionSaved, collector_broker_configured: Boolean(config.collectorToken), collector_gates_verified: Boolean(config.collectorGatesVerified) };
+  return { league_id: config.leagueId, expected_teams: config.expectedTeams, model_call_budget: config.modelCallBudget, model: config.model, endpoint: config.endpoint, api_key_saved: Boolean(config.apiKey), remote_browser_saved: Boolean(config.cdpUrl), yahoo_session_saved: sessionSaved, collector_broker_configured: Boolean(config.collectorToken), collector_gates_verified: Boolean(config.collectorGatesVerified) };
 }
 const yahooDomain = domain => typeof domain === 'string' && /(^|\.)yahoo\.com$/.test(domain);
 export function yahooState(input) {
