@@ -95,3 +95,9 @@ npm run test:browser
 These cover weighted percentages, missing data, storage/restart/idempotent import, actual outgoing model payloads for every decision task, API auth, controlled Chromium collection/pagination, and desktop/mobile UI. Browser tests save screenshots under ignored `test-results/`.
 
 Browser tests use self-contained synthetic fixtures. The user's historical `data/snapshots/` records remain separate from the deployed application image. Actual Yahoo collection, a paid model response, Docker image build and Railway restart need their own observed verification. See `docs/verification/` for what was actually run.
+
+### Restricted collector pilot
+
+The app now has a paused cloud-collector control panel and a separate, capability-scoped upload API. A single roster capture can be uploaded as a bounded manifest plus hashed source artifacts, reconciled, and read back from the volume. Runs and attempts survive restart; overlapping attempts cannot publish a second logical dataset. Schedule slots are 06:00/18:00 Singapore with latest-slot catch-up. Live dispatch targets one existing boxes.dev thread and stays gated by default. See [the pilot protocol](docs/operations/boxes-collector.md#railway-ingest-and-schedule-u4).
+
+This does not establish a connected autonomous broker, proven Yahoo mutation guard or full-league pilot. Keep `COLLECTOR_GATES_VERIFIED=false` and the schedule paused until those external checks and a private Railway restore test have receipts.

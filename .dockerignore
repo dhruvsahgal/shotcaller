@@ -9,3 +9,6 @@
 !public/**
 !prompts/
 !prompts/shotcaller-system.md
+!prompts/collector-readonly.md
+!scripts/
+!scripts/validate-collector-output.mjs

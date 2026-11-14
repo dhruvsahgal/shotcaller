@@ -89,6 +89,15 @@ function renderOverview(data, openEvidence) {
   }
   if (!data.documents.length) archive.append(node('p','No notebook documents imported yet.'));
   const coverage = panel('coverage','Coverage & storage','Numbers live in immutable JSON snapshots on the Railway volume. Notes live alongside them. SQLite is the next storage option; it does not need another service.');
+  if (data.dataset_coverage) {
+    coverage.append(node('p', data.dataset_coverage.note, 'caveat'));
+    coverage.append(table(['Dataset', 'Status', 'Complete segments', 'Expected segments'], data.dataset_coverage.datasets.map(row => [row.dataset, row.status, row.complete_segments, row.expected_segments ?? 'Not declared'])));
+  }
+  if (data.market_evidence?.events.length) {
+    transactions.append(node('h3', 'Normalized market evidence'), node('p', 'Requests and rejected offers are separate from confirmed transactions. Unkeyed observations may describe the same event and are not counted as confirmed moves.'));
+    transactions.append(table(['Status', 'Type', 'Provider event', 'Legs', 'Source observations'], data.market_evidence.events.map(event => [event.conflict ? 'Conflicting evidence' : event.status, event.kind, event.provider_event_id ?? 'Unknown', event.legs.map(leg => `${leg.action}: ${leg.player_name || leg.player_id}`).join('; '), event.observations.length])));
+  }
+  if (data.market_evidence?.invalid_observations?.length) transactions.append(node('p', `${data.market_evidence.invalid_observations.length} market observations have invalid shapes and are excluded from normalized events. Their original sources remain preserved.`, 'caveat'));
   const list = node('ul'); data.gaps.forEach(g=>list.append(node('li',g))); coverage.append(list);
   const sources = node('details'); sources.append(node('summary',`All ${data.sources.length} evidence records`));
   for (const s of data.sources) { const row = node('div',null,'source-row'); row.append(node('strong',s.label),provenance(s)); sources.append(row); }

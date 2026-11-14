@@ -1,0 +1,10 @@
+{
+  "url": "https://basketball.fantasysports.yahoo.com/nba/999/7",
+  "title": "Yahoo consent",
+  "observed_at": "2026-11-14T10:20:30Z",
+  "text": "Review and accept Yahoo consent to continue",
+  "ready": true,
+  "evidence_refs": ["evidence/consent.txt#challenge", "evidence/consent.png"],
+  "checkpoint": { "kind": "consent", "league_id": "999", "team_id": "7", "scoring_period_key": null },
+  "tables": []
+}

@@ -12,13 +12,35 @@ The accompanying [SQLite DDL](../schema/shotcaller.sql) is a future design, not 
 | Decisions | `/data/decisions/<decision-id>/snapshot.json` | Advice plus task, model, prompt fingerprint and input snapshot IDs |
 | Decision briefs | `/data/decisions/<decision-id>/brief.md` | Human-readable reasoning linked to evidence |
 | Forecasts | `/data/forecasts/<forecast-id>/snapshot.json` | Frozen numerical ranges, legal starts, assumptions and exact input/source fingerprints |
+| Collection runs | `/data/runs/<run-id>/snapshot.json` | Immutable collection intent, scope, idempotency key, host identities and budget |
+| Collection attempts | `/data/attempts/<attempt-id>/snapshot.json` | One terminal retry or execution result linked to its run |
+| Scoped observations | `/data/observations/<observation-id>/snapshot.json` | Normalized facts linked to exact source bytes, scope, coverage and parser version |
 | Historical Markdown and source attachments | Private files or imported evidence bundles | Context and source material; never replace structured statistics |
 | Complete-capture pointer | `/data/latest.json` | Most recently published complete browser capture, not necessarily the newest evidence for every subject |
+| Complete-observation index | `/data/indexes/complete-observations.json` | Rebuildable pointers to the newest complete observation in every exact dataset scope |
 | Consolidated view | Derived from saved evidence | A read model; it must retain the source and observation date of every section |
 
 Historical imports are wrapped in version-2 store records with their original payload preserved. Their import time does not become their observation time. Manual snapshots can include several unrelated periods in one file: a weekly matchup, one day's player results, future lineups and season-average waiver statistics. Each needs its own scope and time label.
 
 Do not merge everything into a mutable `current-team.json`. Append observations and compute the current view by league, season, subject, period, value kind, aggregation basis and verified coverage. A recently imported old screenshot must not overwrite fresher observations. A partially captured waiver list cannot prove unlisted players are unavailable.
+
+## Runtime envelopes and replay
+
+Run, attempt and observation IDs are caller-assigned stable identifiers. Publishing the same ID and identical content returns the existing artifact. Publishing different content under that ID fails with an immutable-record conflict. `stored_at` and `content_hash` are assigned by the store; credentials do not belong in any envelope.
+
+A collection run records `job_id`, `idempotency_key`, the intended dataset scope, intended and creation times, automation/thread identities and a bounded budget. It is the durable intent for one logical scheduled slot. Each retry is a separate attempt with its own ID, start and finish times, terminal outcome and produced artifact IDs. Runs and attempts are appended rather than updated, so a restart retains both the intended work and every terminal result.
+
+An observation records:
+
+- `source.id` and the SHA-256 `source.hash` of the supporting artifact;
+- `observed_at` and its precision, keeping the time null and the precision `unknown` when the source time is unknown;
+- an exact scope containing dataset, league, season, team or matchup, scoring period/timezone, value kind and aggregation basis;
+- complete, partial or unknown coverage with a concrete note;
+- parser version, normalized data and typed links to evidence, forecasts, decisions, actions or outcomes.
+
+A correction is a new observation whose `correction_of` names the prior observation. The old artifact remains byte-for-byte unchanged. A correction may become the complete pointer for its own exact scope, but it does not erase the history it corrects.
+
+The complete-observation index uses the canonical scope as its key. Only complete observations can move a pointer, and observation time wins over storage/import time. Team A and Team B on the same lineup date therefore have separate pointers, as do Week 3 and Week 4 observed on the same day. `Store.rebuildObservationIndex()` recreates the index entirely from immutable observation files with deterministic content; it is never the source of truth.
 
 ## What SQLite adds later
 
@@ -51,7 +73,7 @@ erDiagram
 
 ### Observation, period and quality
 
-`evidence_record` identifies exact archived bytes by SHA-256 and records when they entered the store. Its rows cannot be updated or deleted. A correction is a new record linked through `supersedes_id`.
+`evidence_record` identifies exact archived bytes by SHA-256 and records when they entered the store. Its rows cannot be updated or deleted. The current JSON runtime uses `correction_of`; a future SQLite projection maps that relationship to `supersedes_id`.
 
 `observation` identifies a table or subsection inside that evidence using a source locator. It records:
 

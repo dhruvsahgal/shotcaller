@@ -1,6 +1,9 @@
+import { coverageOverview } from './coverage.mjs';
+import { marketEvidence } from './market.mjs';
 import { digest } from './store.mjs';
 import { countKeys, categoryKeys } from './schema.mjs';
 import { historicalShapeError } from './import-validation.mjs';
+import { compareObservations, observationScopeKey } from './observations.mjs';
 
 const statKeys = new Set([...countKeys, ...categoryKeys, 'st']);
 const labels = {
@@ -77,8 +80,35 @@ const hasWeek = payload => Number.isInteger(Number(payload.week)) && Number(payl
 const matchupKinds = new Set(['matchup_weekly_category_totals', 'standard_team_performance_check']);
 
 /** Read-only projection: immutable evidence stays separate from period-specific facts and decisions. */
-export function buildOverview(records = [], decisions = [], leagueId = null) {
-  const allEntries = records.map(record => {
+function observationOverview(records, leagueId) {
+  const scopes = new Map();
+  for (const record of records) {
+    if (record?.kind !== 'observation' || !record.scope) continue;
+    if (leagueId !== null && String(record.scope.league_id) !== String(leagueId)) continue;
+    const key = observationScopeKey(record.scope);
+    if (!scopes.has(key)) scopes.set(key, []);
+    scopes.get(key).push(record);
+  }
+  return {
+    scopes: [...scopes.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, history]) => {
+      history.sort((a, b) => compareObservations(b, a));
+      return {
+        key,
+        scope: structuredClone(history[0].scope),
+        current: structuredClone(history.find(record => record.coverage?.status === 'complete') ?? null),
+        latest: structuredClone(history[0]),
+        history: structuredClone(history)
+      };
+    })
+  };
+}
+
+export function buildOverview(records = [], decisions = [], leagueId = null, observations = []) {
+  const scopedObservations = new Map();
+  for (const record of [...records, ...observations]) {
+    if (record?.kind === 'observation') scopedObservations.set(record.id, record);
+  }
+  const allEntries = records.filter(record => record?.kind !== 'observation').map(record => {
     const payload = record.kind === 'historical_import' ? record.payload : record;
     return { record, payload, meta: metadata(record, payload) };
   }).filter(({ payload }) => leagueId === null || payload.league_id == null || String(payload.league_id) === String(leagueId)).sort(recent);
@@ -163,7 +193,9 @@ export function buildOverview(records = [], decisions = [], leagueId = null) {
   if (recommendationEntry) gaps.push('The displayed recommendation is saved reasoning from its observation date, not a newly evaluated or executed move.');
 
   return {
-    sources, matchup: matchupHistory[0] ?? null, matchup_history: matchupHistory,
+    dataset_coverage: coverageOverview([...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId))),
+    market_evidence: marketEvidence([...entries.map(entry => entry.record), ...[...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId))]),
+    sources, matchup: matchupHistory[0] ?? null, matchup_history: matchupHistory, observations: observationOverview([...scopedObservations.values()], leagueId),
     lineups: lineupMeta ? { meta: lineupMeta, days: [...lineupDays.values()].sort((a, b) => a.date.localeCompare(b.date)) } : null,
     roster, team_log: teamLog, league, waivers, transactions: [...transactions.values()],
     status: statusEntry ? { ...structuredClone(statusEntry.payload.roster_status), meta: statusEntry.meta } : null,

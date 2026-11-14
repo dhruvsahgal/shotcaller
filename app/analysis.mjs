@@ -1,3 +1,5 @@
+import { marketEvidence } from './market.mjs';
+import { coverageOverview } from './coverage.mjs';
 import { categoryKeys } from './schema.mjs';
 
 export function categoryRanks(rows) {
@@ -29,7 +31,7 @@ export function analyze(records) {
   const teamPage = current?.pages.find(p => p.kind === 'teamstats');
   const historical = records.find(s => s.kind === 'historical_import' && s.payload.kind === 'league_weekly_category_totals');
   const rankRows = teamPage?.rows || historical?.payload.teams.map(t => ({ ...t, stats: { ...t.stats, stl: t.stats.stl ?? t.stats.st } })) || [];
-  return { snapshot_id: current?.id || historical?.id || null, historical: !teamPage, ranks: categoryRanks(rankRows), period: teamPage?.period || historical?.payload.coverage || null, movements, transactions: [...events.values()], manager_activity: [...activity.values()], notes: [
+  return { market_evidence: marketEvidence(records), dataset_coverage: coverageOverview(records), snapshot_id: current?.id || historical?.id || null, historical: !teamPage, ranks: categoryRanks(rankRows), period: teamPage?.period || historical?.payload.coverage || null, movements, transactions: [...events.values()], manager_activity: [...activity.values()], notes: [
     'Ranks compare the displayed period, not future performance.',
     'Availability differences do not prove an add/drop; verify transaction history.',
     'Manager activity describes observed events only; preferences and intentions remain hypotheses.',
