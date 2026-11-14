@@ -27,28 +27,19 @@ function captureSignature(capture) {
   return canonicalDigest(stable);
 }
 
-function inventoryEntry(capture) {
-  return {
-    url: capture.url,
-    checkpoint: structuredClone(capture.checkpoint ?? null),
-    evidence_refs: structuredClone(capture.evidence_refs ?? []),
-    source_hash: canonicalDigest(capture)
-  };
-}
-
 export async function collectBoundedRoster({ request, observe, limits: limitInput, now = () => Date.now() }) {
   if (typeof observe !== 'function') throw new Error('Collector requires an observation function');
   const limits = limitsOf(limitInput);
   const startedAt = now();
   const signatures = new Map();
   const inventory = [];
-  let lastCapture = null;
+  let lastExtracted = null;
 
   for (let step = 1; step <= limits.max_steps; step += 1) {
     const capture = await observe({ step, url: request.allowed_pages[0] });
-    lastCapture = capture;
-    inventory.push(inventoryEntry(capture));
     const extracted = extractRosterObservation(capture, request);
+    lastExtracted = extracted;
+    inventory.push(extracted.extraction.page_inventory[0]);
     if (extracted.status === 'needs_login') return { ...extracted, extraction: { ...extracted.extraction, page_inventory: inventory } };
     if (estimatedTokens(capture) > limits.max_source_tokens) return forcePartialReceipt(extracted, 'Collector source token limit reached; coverage is incomplete.', inventory);
     if (now() - startedAt > limits.max_elapsed_ms) return forcePartialReceipt(extracted, 'Collector time limit reached; coverage is incomplete.', inventory);
@@ -60,7 +51,5 @@ export async function collectBoundedRoster({ request, observe, limits: limitInpu
     if (repeats > limits.max_repeated_captures) return forcePartialReceipt(extracted, 'Repeated capture indicates stalled navigation; coverage is incomplete.', inventory);
   }
 
-  const extracted = extractRosterObservation(lastCapture, request);
-  return forcePartialReceipt(extracted, 'Collector step limit reached; coverage is incomplete.', inventory);
+  return forcePartialReceipt(lastExtracted, 'Collector step limit reached; coverage is incomplete.', inventory);
 }
-

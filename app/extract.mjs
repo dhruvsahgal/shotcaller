@@ -7,13 +7,13 @@ const plainObject = value => value !== null && typeof value === 'object' && !Arr
 const clean = value => typeof value === 'string' && value.trim() ? value.trim() : null;
 const unique = values => [...new Set(values)];
 
-function sourceInventory(capture) {
-  return [{
+export function pageInventoryEntry(capture) {
+  return {
     url: capture.url,
     checkpoint: structuredClone(capture.checkpoint ?? null),
     evidence_refs: structuredClone(capture.evidence_refs ?? []),
     source_hash: canonicalDigest(capture)
-  }];
+  };
 }
 
 function sourceBase(capture, request) {
@@ -67,10 +67,8 @@ function identity(row) {
   return { player_id: url.pathname.match(playerPath)?.[1] ?? null, player_url: `${url.origin}${url.pathname}` };
 }
 
-function partialReason(warnings, missingFields, missingRows) {
+function partialReason(warnings) {
   if (warnings.length) return warnings.join(' ');
-  if (missingRows) return `${missingRows} visible roster row(s) could not be extracted.`;
-  if (missingFields.length) return 'Some visible roster fields were unavailable and remain null.';
   return 'Roster coverage could not be verified.';
 }
 
@@ -78,7 +76,8 @@ export function extractRosterObservation(capture, request) {
   if (!plainObject(capture) || !plainObject(request) || !plainObject(request.league) || !plainObject(request.team)) throw new Error('Invalid roster extraction input');
   const base = sourceBase(capture, request);
   const challenge = loginChallenge(capture);
-  const inventory = sourceInventory(capture);
+  const inventory = [pageInventoryEntry(capture)];
+  const sourceHash = inventory[0].source_hash;
   if (challenge) {
     return {
       ...base,
@@ -97,7 +96,7 @@ export function extractRosterObservation(capture, request) {
       warnings: ['Human login is required in the shared Browser.'],
       extraction: {
         method: 'structured_text', headers: [], displayed_total: null, source_visible_rows: null,
-        row_locators: [], source_hash: canonicalDigest(capture), page_inventory: inventory
+        row_locators: [], source_hash: sourceHash, page_inventory: inventory
       }
     };
   }
@@ -165,7 +164,7 @@ export function extractRosterObservation(capture, request) {
       missing_rows: missingRows,
       missing_fields: unique(missingFields),
       row_reconciled: true,
-      note: complete ? null : partialReason(warnings, missingFields, missingRows)
+      note: complete ? null : partialReason(warnings)
     },
     roster,
     login: { required: false, challenge: null },
@@ -176,7 +175,7 @@ export function extractRosterObservation(capture, request) {
       displayed_total: displayedTotal,
       source_visible_rows: rows.length,
       row_locators: locators,
-      source_hash: canonicalDigest(capture),
+      source_hash: sourceHash,
       page_inventory: inventory
     }
   };

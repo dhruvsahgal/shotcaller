@@ -1,12 +1,6 @@
 import { validateEvidenceScope, validateIdentifier, validateRecordLinks, validateTimestamp } from './schema.mjs';
 import { validDate } from './time.mjs';
-
-const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const canonical = value => Array.isArray(value)
-  ? value.map(canonical)
-  : plainObject(value)
-    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
-    : value;
+import { canonical, isPlainObject } from './value.mjs';
 
 export function observationScopeKey(scope) {
   validateEvidenceScope(scope);
@@ -31,9 +25,9 @@ export function compareObservations(a, b) {
 }
 
 export function observationEnvelope(input, storedAt, contentHash) {
-  if (!plainObject(input)) throw new Error('Invalid observation');
+  if (!isPlainObject(input)) throw new Error('Invalid observation');
   validateIdentifier(input.id, 'observation id');
-  if (!plainObject(input.source) || typeof input.source.id !== 'string' || !input.source.id || !/^[a-f0-9]{64}$/i.test(input.source.hash || '')) throw new Error('Invalid observation source');
+  if (!isPlainObject(input.source) || typeof input.source.id !== 'string' || !input.source.id || !/^[a-f0-9]{64}$/i.test(input.source.hash || '')) throw new Error('Invalid observation source');
   if (!['instant', 'date', 'approximate', 'unknown'].includes(input.observed_at_precision)) throw new Error('Invalid observation time precision');
   if (input.observed_at_precision === 'unknown') {
     if (input.observed_at !== null) throw new Error('Unknown observation time must be null');
@@ -41,9 +35,9 @@ export function observationEnvelope(input, storedAt, contentHash) {
     if (!validDate(input.observed_at)) throw new Error('Invalid observation time');
   } else validateTimestamp(input.observed_at, 'observation time');
   validateEvidenceScope(input.scope);
-  if (!plainObject(input.coverage) || !['complete', 'partial', 'unknown'].includes(input.coverage.status) || typeof input.coverage.note !== 'string' || !input.coverage.note.trim()) throw new Error('Invalid observation coverage');
+  if (!isPlainObject(input.coverage) || !['complete', 'partial', 'unknown'].includes(input.coverage.status) || typeof input.coverage.note !== 'string' || !input.coverage.note.trim()) throw new Error('Invalid observation coverage');
   if (typeof input.parser_version !== 'string' || !input.parser_version) throw new Error('Invalid observation parser version');
-  if (!plainObject(input.data) && !Array.isArray(input.data)) throw new Error('Invalid observation data');
+  if (!isPlainObject(input.data) && !Array.isArray(input.data)) throw new Error('Invalid observation data');
   if (input.correction_of != null) validateIdentifier(input.correction_of, 'correction id');
   validateRecordLinks(input.links ?? {});
   validateTimestamp(storedAt, 'storage time');

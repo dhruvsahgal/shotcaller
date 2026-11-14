@@ -5,10 +5,9 @@ import { historicalShapeError } from './import-validation.mjs';
 import { validateIdentifier } from './schema.mjs';
 import { compareObservations, observationEnvelope, observationScopeKey } from './observations.mjs';
 import { attemptEnvelope, runEnvelope } from './runs.mjs';
+import { canonical } from './value.mjs';
 
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
-const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const canonical = value => Array.isArray(value) ? value.map(canonical) : plainObject(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 export const canonicalDigest = value => digest(canonical(value));
 export function safeId(id) {
   return validateIdentifier(id);
@@ -21,7 +20,11 @@ export async function atomicJSON(file, value) {
   try { await rename(temp, file); } finally { await rm(temp, { force: true }); }
 }
 export class Store {
-  constructor(root) { this.root = root; this.initializing = null; }
+  constructor(root) {
+    this.root = root;
+    this.initializing = null;
+    this.observationIndexUpdating = Promise.resolve();
+  }
   async init() {
     if (!this.initializing) {
       this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
@@ -77,8 +80,32 @@ export class Store {
     }
     const contentHash = canonicalDigest(input);
     const record = await this.publish(observationEnvelope(input, new Date().toISOString(), contentHash), 'observations');
-    await this.rebuildObservationIndex();
+    await this.updateCompleteObservationIndex(record);
     return record;
+  }
+  async updateCompleteObservationIndex(record) {
+    if (record.coverage?.status !== 'complete') return null;
+    const update = async () => {
+      const index = await this.observationIndex();
+      const key = observationScopeKey(record.scope);
+      const currentPointer = index.complete[key];
+      if (currentPointer) {
+        try {
+          const current = await this.read(currentPointer.id, 'observations');
+          if (compareObservations(record, current) <= 0) return index;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      const pointer = { id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash };
+      const complete = Object.fromEntries(Object.entries({ ...index.complete, [key]: pointer }).sort(([a], [b]) => a.localeCompare(b)));
+      const next = { ...index, complete };
+      await atomicJSON(join(this.root, 'indexes', 'complete-observations.json'), next);
+      return next;
+    };
+    const pending = this.observationIndexUpdating.then(update, update);
+    this.observationIndexUpdating = pending.then(() => undefined, () => undefined);
+    return pending;
   }
   async rebuildObservationIndex() {
     const complete = new Map();

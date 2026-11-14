@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { strictInstant } from '../app/time.mjs';
+import { rosterHeaders } from '../app/extract.mjs';
 
 const yahooFantasyHost = 'basketball.fantasysports.yahoo.com';
 const yahooHosts = new Set([yahooFantasyHost, 'sports.yahoo.com']);
@@ -13,7 +14,6 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const evidenceReference = /^evidence\/[A-Za-z0-9._/-]+(?:#[A-Za-z0-9._:-]+)?$/;
 const allowedSlotGroups = new Set(['active', 'bench', 'il']);
 const loginChallenges = new Set(['login', 'passkey', 'consent', 'challenge']);
-const rosterHeaders = ['Slot', 'Player', 'NBA Team', 'Eligibility', 'Injury'];
 
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
