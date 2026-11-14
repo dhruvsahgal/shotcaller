@@ -18,6 +18,7 @@ async function service(mode = 'live', options = {}) {
 
 test('attempt and outcome transitions are explicit and terminal states have no exits', () => {
   assert.deepEqual(actionAttemptTransitions.preflight_passed, ['blocked', 'prepared']);
+  assert.deepEqual(actionAttemptTransitions.blocked, []);
   assert.deepEqual(actionOutcomeTransitions.prepared, ['applied', 'blocked', 'ambiguous', 'partial']);
   assert.deepEqual(actionOutcomeTransitions.applied, []);
   assert.deepEqual(actionOutcomeTransitions.blocked, []);
@@ -97,6 +98,8 @@ test('a stop or human takeover after preflight blocks arming the mutation', asyn
   const blocked = await actions.arm(intent.id, armInput(preflight.id));
   assert.equal(blocked.status, 'blocked');
   assert.match(blocked.preflight.reasons.join(' '), /stop switch/);
+  await actions.setControl({ stop_switch: false, human_takeover: false });
+  assert.equal((await actions.arm(intent.id, armInput(preflight.id))).id, blocked.id);
 });
 
 test('shadow mode records a complete preflight without consuming permission or claiming mutation', async () => {
@@ -140,8 +143,8 @@ test('gate revocation or shadow restart blocks arm and dispatch even for a live 
 test('IL entry and activation use direction-specific eligibility and capacity', () => {
   const entry = { ...proposal('il_move', { player_id: 'p1', from_slot: 'BN', to_slot: 'IL' }), id: 'action-il-1' };
   assert.equal(preflightAction(entry, liveState, {}, now).allowed, true);
-  const activation = { ...proposal('il_move', { player_id: 'p1', from_slot: 'IL', to_slot: 'PG' }), id: 'action-il-2' };
-  const state = { ...liveState, slots: { ...liveState.slots, p1: 'IL' }, injury_eligible_player_ids: [], open_il_slots: 0, open_active_slots: 1 };
+  const activation = { ...proposal('il_move', { player_id: 'p1', from_slot: 'IL', to_slot: 'BN' }), id: 'action-il-2' };
+  const state = { ...liveState, slots: { ...liveState.slots, p1: 'IL' }, eligible_slots: { ...liveState.eligible_slots, p1: [] }, injury_eligible_player_ids: [], open_il_slots: 0, open_active_slots: 1 };
   assert.equal(preflightAction(activation, state, {}, now).allowed, true);
   assert.match(preflightAction(activation, { ...state, open_active_slots: 0 }, {}, now).reasons.join(' '), /active roster slot/);
   assert.throws(() => validateActionProposal(proposal('il_move', { player_id: 'p1', from_slot: 'BN', to_slot: 'Util' }), now), /Invalid IL move/);

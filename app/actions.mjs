@@ -15,7 +15,10 @@ const readbackFields = input => ({ outcome: input.outcome, before_evidence_ids: 
 
 export const actionAttemptTransitions = Object.freeze({
   proposed: Object.freeze(['blocked', 'shadowed', 'preflight_passed']),
-  preflight_passed: Object.freeze(['blocked', 'prepared'])
+  preflight_passed: Object.freeze(['blocked', 'prepared']),
+  blocked: Object.freeze([]),
+  shadowed: Object.freeze([]),
+  prepared: Object.freeze([])
 });
 
 export const actionOutcomeTransitions = Object.freeze({
@@ -65,7 +68,7 @@ export function preflightAction(intent, state, control = {}, now = Date.now()) {
       if (!state?.injury_eligible_player_ids?.includes(operation.player_id)) reasons.push('The player is not currently IL eligible.');
       if ((state?.open_il_slots ?? 0) < 1) reasons.push('No IL slot is open.');
     } else {
-      if (!(state?.eligible_slots?.[operation.player_id] || []).includes(operation.to_slot)) reasons.push('The active destination slot is not currently eligible.');
+      if (operation.to_slot !== 'BN' && !(state?.eligible_slots?.[operation.player_id] || []).includes(operation.to_slot)) reasons.push('The active destination slot is not currently eligible.');
       if ((state?.open_active_slots ?? 0) < 1) reasons.push('No active roster slot is open for IL activation.');
     }
   }
@@ -105,6 +108,11 @@ export class ActionService {
     const maxAge = this.config.actionMaxObservationAgeMs ?? 120_000;
     if (age < 0 || age > maxAge) throw new Error('Action state evidence is stale or from the future');
     return observedAt;
+  }
+  async attemptSuccessor(attemptId) {
+    const rows = (await this.store.list('action-attempts')).filter(row => row.previous_attempt_id === attemptId);
+    if (rows.length > 1) throw new Error('Action attempt has conflicting transitions');
+    return rows[0] || null;
   }
   async control() {
     try { return JSON.parse(await readFile(join(this.root, 'control.json'), 'utf8')); }
@@ -156,6 +164,8 @@ export class ActionService {
       this.assertLiveConfiguration(intent);
       const attempt = await this.store.read(input.attempt_id, 'action-attempts');
       if (attempt.intent_id !== id || attempt.status !== 'preflight_passed') throw new Error('Action has not passed a live preflight');
+      const successor = await this.attemptSuccessor(attempt.id);
+      if (successor) return successor.status === 'prepared' ? { status: 'reconcile_required', intent_id: id, reason: 'This preflight already armed a mutation; reconcile Yahoo state before any retry.' } : successor;
       const observedAt = this.validateFreshObservation(input.observed_at);
       const evidence = await this.validateEvidence(input.before_evidence_ids, 'arm', id);
       const preflight = { ...preflightAction(intent, input.state, control, this.now()), state_observed_at: observedAt };
