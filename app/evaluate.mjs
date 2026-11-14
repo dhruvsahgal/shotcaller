@@ -35,7 +35,9 @@ function topologyCoverage(forecast, outcome) {
   const duplicateExpectedTeamIds = duplicates(expectedTeamIds);
   if (expected.some(row => !Array.isArray(row?.team_ids) || row.team_ids.length !== 2 || new Set(row.team_ids).size !== 2)) issues.push('Each frozen matchup must contain exactly two unique team IDs.');
   if (duplicateExpectedTeamIds.length) issues.push(`The frozen topology assigns teams more than once: ${duplicateExpectedTeamIds.join(', ')}.`);
-  if (duplicates(forecast.teams.map(row => row?.id).filter(Boolean)).length) issues.push('The forecast repeats team records.');
+  const forecastTeamIds = forecast.teams.map(row => row?.id).filter(Boolean);
+  if (duplicates(forecastTeamIds).length) issues.push('The forecast repeats team records.');
+  if (!sameIds(sortedIds(expectedTeamIds), sortedIds(forecastTeamIds))) issues.push('Forecast team records do not exactly match the frozen matchup topology.');
 
   const actualById = new Map(actual.map(row => [row?.id, row]));
   for (const matchup of expected) {
