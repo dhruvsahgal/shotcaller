@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 let token = '', state = null, selected = null, poll = null;
+let collector = null, pendingCollectorTime = null;
 const node = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
 const display = value => value == null ? '—' : typeof value === 'number' && value > 0 && value < 1 ? value.toFixed(3) : String(value);
 function table(headers, rows) {
@@ -113,7 +114,33 @@ async function loadSetup() {
   $('setup-endpoint').value = settings.endpoint;
   $('key-status').textContent = settings.api_key_saved ? 'API key saved privately. Leave blank to keep it.' : 'No API key saved yet.';
   $('yahoo-status').textContent = settings.remote_browser_saved ? 'Remote browser configured. Refresh Yahoo to verify access.' : settings.yahoo_session_saved ? 'Yahoo session saved. Refresh Yahoo to verify access.' : 'Yahoo is not connected yet.';
+  await loadCollector();
 }
+async function loadCollector() {
+  collector = await api('collector');
+  $('collector-status').textContent = `${collector.paused ? 'PAUSED' : 'ACTIVE'} · 06:00 / 18:00 Singapore · next slot ${collector.next_run} · ${collector.gates_verified ? 'Pilot gates attested by operator' : 'Live pilot gates unverified'}`;
+  if (collector.scope) {
+    $('collector-team').value = collector.scope.team_id;
+    $('collector-season').value = collector.scope.season;
+    $('collector-week').value = collector.scope.scoring_period.key;
+    $('collector-timezone').value = collector.scope.scoring_period.timezone;
+  }
+  $('collector-run').disabled = !collector.scope;
+  $('collector-run').textContent = collector.gates_verified && collector.trigger_configured ? 'Run now' : 'Prepare supervised run';
+  $('collector-pause').disabled = !collector.scope || (!collector.gates_verified && collector.paused);
+  $('collector-pause').textContent = collector.paused ? 'Resume schedule' : 'Pause schedule';
+  $('collector-attempts').replaceChildren(table(['Attempt', 'Outcome', 'Finished'], collector.attempts.map(a => [a.id, a.outcome, a.finished_at])));
+}
+$('collector-run').addEventListener('click', () => attempt(async () => {
+  $('collector-run').disabled = true;
+  pendingCollectorTime ||= new Date().toISOString();
+  try {
+    const result = await api('collector/run', { intended_for: pendingCollectorTime, dispatch: collector.gates_verified && collector.trigger_configured });
+    pendingCollectorTime = null;
+    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : 'Launch acceptance is not evidence of completed capture.'}`;
+  } finally { await loadCollector(); }
+}));
+$('collector-pause').addEventListener('click', () => attempt(async () => { await api('collector/settings', { paused: !collector.paused }); await loadCollector(); }));
 function setupForm(id, action) {
   $(id).addEventListener('submit', e => { e.preventDefault(); attempt(async () => {
     const button = $(id).querySelector('button'); button.disabled = true;
@@ -124,6 +151,7 @@ function setupForm(id, action) {
   }); });
 }
 setupForm('league-form', () => api('setup', { leagueId: $('setup-league').value.trim(), expectedTeams: Number($('setup-teams').value) }));
+setupForm('collector-form', () => api('collector/settings', { paused: true, scope: { dataset: 'team_roster', league_id: state.league_id, season: $('collector-season').value.trim(), team_id: $('collector-team').value.trim(), scoring_period: { kind: 'week', key: $('collector-week').value.trim(), timezone: $('collector-timezone').value.trim() }, value_basis: { value: 'observed', aggregation: 'roster' } } }));
 setupForm('model-form', async () => {
   const patch = { model: $('setup-model').value.trim(), endpoint: $('setup-endpoint').value.trim() };
   if ($('setup-key').value.trim()) patch.apiKey = $('setup-key').value.trim();

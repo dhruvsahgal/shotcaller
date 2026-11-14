@@ -12,27 +12,35 @@ import { makeDecision, promptInfo, tasks } from './decisions.mjs';
 import { refreshYahoo } from './yahoo.mjs';
 import { loadSettings, saveSettings, setupStatus, saveYahooState } from './setup.mjs';
 import { buildForecast, validateForecastInput } from './forecast.mjs';
+import { CollectorRuns } from './collector-runs.mjs';
+import { CollectorIngest, ingestLimits } from './ingest.mjs';
 
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/overview.js': ['overview.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
-function authorized(req, token) {
+function authorized(req, token = '') {
   const supplied = Buffer.from(req.headers.authorization || '');
   const expected = Buffer.from(`Bearer ${token}`);
   return token.length >= 24 && supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 async function body(req, limit = 32000) {
+  return JSON.parse((await bytes(req, limit)).toString() || '{}');
+}
+async function bytes(req, limit) {
   let size = 0; const parts = [];
   for await (const part of req) {
     size += part.length;
     if (size > limit) throw new Error('Request too large');
     parts.push(part);
   }
-  return JSON.parse(Buffer.concat(parts).toString() || '{}');
+  return Buffer.concat(parts);
 }
 export async function createApp(config, options = {}) {
   if (config.token.length < 24) throw new Error('APP_TOKEN must contain at least 24 characters');
   const store = options.store || new Store(config.dataDir);
   await store.init();
   await loadSettings(config);
+  const collectorRuns = new CollectorRuns(config, store, options.collectorOptions);
+  const ingest = new CollectorIngest(config, store, options.collectorOptions);
+  await collectorRuns.settings();
   let refresh = { status: 'idle', detail: 'No refresh in this process', updated_at: null };
   try {
     refresh = JSON.parse(await readFile(join(config.dataDir, 'refresh.json'), 'utf8'));
@@ -53,7 +61,31 @@ export async function createApp(config, options = {}) {
         const [file, type] = assets[url.pathname];
         res.writeHead(200, { 'Content-Type': type }); return res.end(await readFile(new URL(`../public/${file}`, import.meta.url)));
       }
+      if (url.pathname === '/api/collector/capabilities' && req.method === 'POST') {
+        if (!authorized(req, config.token) && !authorized(req, config.collectorToken)) return send(401, { error: 'Collector broker authentication required' });
+        return send(201, await ingest.mint(await body(req)));
+      }
+      if (['/api/collector/manifest', '/api/collector/commit', '/api/collector/readback'].includes(url.pathname) || /^\/api\/collector\/artifacts\/[^/]+$/.test(url.pathname)) {
+        const claims = await ingest.authenticate((req.headers.authorization || '').replace(/^Bearer /, ''));
+        if (!claims) return send(401, { error: 'Valid run-scoped upload capability required' });
+        if (req.method === 'POST' && url.pathname === '/api/collector/manifest') return send(201, await ingest.manifest(claims, await body(req, ingestLimits.manifest)));
+        if (req.method === 'POST' && url.pathname === '/api/collector/commit') return send(200, await ingest.commit(claims));
+        if (req.method === 'GET' && url.pathname === '/api/collector/readback') return send(200, await ingest.readback(claims));
+        if (/^\/api\/collector\/artifacts\/[^/]+$/.test(url.pathname)) {
+          const id = url.pathname.split('/').at(-1);
+          if (req.method === 'PUT') {
+            const descriptor = await ingest.descriptor(claims, id);
+            await ingest.upload(claims, id, await bytes(req, descriptor.bytes));
+            return send(201, { id, sha256: descriptor.sha256, bytes: descriptor.bytes });
+          }
+          if (req.method === 'GET') { const artifact = await ingest.readArtifact(claims, id); res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(artifact); }
+        }
+        return send(405, { error: 'Collector method not allowed' });
+      }
       if (!authorized(req, config.token)) return send(401, { error: 'Enter your ShotCaller access token' });
+      if (req.method === 'GET' && url.pathname === '/api/collector') return send(200, await collectorRuns.status());
+      if (req.method === 'POST' && url.pathname === '/api/collector/settings') return send(200, await collectorRuns.configure(await body(req)));
+      if (req.method === 'POST' && url.pathname === '/api/collector/run') return send(201, await collectorRuns.runNow(await body(req)));
       if (req.method === 'GET' && url.pathname === '/api/setup') return send(200, await setupStatus(config));
       if (req.method === 'POST' && ['/api/setup', '/api/setup/yahoo', '/api/import'].includes(url.pathname)) {
         if (refreshing || deciding || configuring) return send(409, { error: 'Wait for the current operation to finish' });
@@ -65,7 +97,7 @@ export async function createApp(config, options = {}) {
             return send(201, { id: record.id, status: record.status });
           }
           if (url.pathname === '/api/setup/yahoo') await saveYahooState(config, input);
-          else await saveSettings(config, input, (await store.list()).length > 0);
+          else await saveSettings(config, input, (await store.list()).length > 0 || (await store.list('runs')).length > 0);
           return send(200, await setupStatus(config));
         } finally { configuring = false; }
       }
@@ -114,6 +146,9 @@ export async function createApp(config, options = {}) {
     }
   });
   server.requestTimeout = 70000;
+  const collectorTimer = setInterval(() => { void collectorRuns.tick().catch(() => {}); }, 60_000);
+  collectorTimer.unref();
+  server.on('close', () => clearInterval(collectorTimer));
   return server;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

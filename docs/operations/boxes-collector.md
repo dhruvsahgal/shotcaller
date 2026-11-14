@@ -123,3 +123,34 @@ node scripts/validate-collector-output.mjs test/fixtures/collector/source-instru
 ```
 
 Expected result: nonzero exit with a contract rejection. No live Yahoo access, Railway upload, recurring schedule, or fantasy-decision model call occurs in these checks.
+
+## Railway ingest and schedule (U4)
+
+Implemented repository controls do not establish a working unattended broker. The default is a paused, single-roster pilot. Use **Setup → Cloud collector pilot** to save the scope and prepare a supervised run. The persisted schedule is 06:00/18:00 Asia/Singapore; after downtime it catches up only the latest missed slot. Keep one Railway replica with one private persistent volume. The file journal and in-process publication queue are not a distributed database.
+
+Configure `BOXES_RUN_URL`, `BOXES_AUTOMATION_SECRET`, `BOXES_COLLECTOR_THREAD_ID` and `BOXES_AUTOMATION_ID` in Railway. The endpoint must be HTTPS on boxes.dev, copied from API setup. `COLLECTOR_TOKEN` is a distinct random broker credential (at least 24 characters). Keep both long-lived credentials outside the browser and model environment. They must not appear in prompts, screenshots, public build context or logs. The API exposes only readiness booleans. A short-lived capability is returned only to the authenticated administrator or isolated broker, never included in the boxes.dev prompt.
+
+The current [boxes.dev automation API](https://boxes.dev/help/automation-api) accepts an existing-thread target and an idempotency header. ShotCaller always targets the configured standing thread. It treats `thread_ready` as launch acceptance; only verified artifact ingestion establishes completion. API triggers require activation in boxes.dev, while Railway's own schedule remains separately paused. Start with the [paused automation's manual test](https://boxes.dev/help/create-automation), then a controlled API test. Never configure a fresh devbox as a fallback for a missing thread.
+
+### Supervised Test B protocol
+
+Use the administrator API from a trusted machine. Do not hand the admin token to the collector agent.
+
+1. `POST /api/collector/run` with `{ "scope": <bounded evidence scope>, "intended_for": <ISO timestamp>, "dispatch": false }`. Save the returned run ID and idempotency key. Retrying the same scope and intended timestamp reuses the logical run. The UI prepares this request; `npm run shotcaller -- collector-run request.json` is available when the app is stopped.
+2. The trusted uploader requests `POST /api/collector/capabilities` with `run_id` and a unique `attempt_id` starting `collector-`, using the administrator or broker credential. The returned opaque bearer capability expires after 15 minutes and is bound to that league/run/attempt and artifact limits. A retry gets a new attempt ID but retains the logical run key. Never paste the capability into the browser agent.
+3. With the capability, `POST /api/collector/manifest`. Exact fields: `version: 1`, `run_id`, `attempt_id`, `idempotency_key`, `league_id`, `artifacts`. Each artifact has `id`, `class`, `sha256`, `bytes`, `evidence_ref`. IDs are bounded and references must be `evidence/<filename>.json`, `.txt` or `.png`. One `collector_output` and one `structured_capture` are required, together with every referenced text/screenshot. The manifest limit is 32 KiB; at most 16 artifacts and 8 MiB total. Per-file limits are 256 KiB output, 1 MiB capture, 512 KiB text and 2 MiB PNG.
+4. `PUT /api/collector/artifacts/<id>` with raw artifact bytes. Each request has its own manifest-derived size bound; hashes must match. No remote URLs or filesystem paths are fetched. The generic historical import limit is unchanged.
+5. `POST /api/collector/commit`. Railway reads every stored artifact back, verifies hashes and reconciles extracted roster rows against the structured source, then publishes one immutable logical observation. Overlapping attempts retain their own evidence and a duplicate receipt. Login failures retain a `needs_login` receipt and publish no roster.
+6. `GET /api/collector/readback` and optionally `GET /api/collector/artifacts/<id>` with the same capability. Compare all hashes and the observation ID to the local manifest before deleting the **private local spool only**. If acknowledgement was lost, retry commit/readback; published evidence is reused. Expired capabilities can be renewed by the trusted broker for the same attempt.
+
+Source files remain private on the Railway volume, under `collector-artifacts`; manifests, runs, attempts and observations are separate. Capability files contain scope/expiry metadata, not bearer tokens. Collector credentials have no Setup, general evidence, forecast, decision or action rights. Capability holders can read only their own manifest-bound artifacts. A capability is still a secret until it expires.
+
+### Promotion and operational proof
+
+`COLLECTOR_GATES_VERIFIED=false` is the default. Set it to `true` only after an operator has recorded Test A, connected Test B, independently enforced mutation guard, isolated upload mediation and private backup/restore evidence. This environment switch is an operator attestation, not an automatic proof checker. Once attested, **Run now** can trigger the configured boxes.dev thread while Railway's schedule stays paused. Only then resume the schedule. If broker isolation cannot be demonstrated, keep supervised manual uploads indefinitely.
+
+The scheduler preserves failed launch and missing-output timeout receipts and displays them under the collector panel. Provider budget/capacity refusals produce a generic terminal alert; inspect boxes.dev for detail without copying secrets into the journal. Collection failure does not authorize any Yahoo mutation.
+
+Before promotion, pause collection and back up the entire private volume to encrypted private storage, including `collector`, `collector-artifacts`, `collector-manifests`, `runs`, `attempts`, `observations` and indexes. Restore it to an isolated directory and run the same manifest/readback hash comparison, verify observation source links, then rebuild the observation index and compare pointers. Do not restore over the live volume for this test. Repository tests exercise an isolated fixture restore and 0600 evidence files; an actual Railway backup/restore receipt remains required. Never commit backup contents. U10 covers rotation and long-term retention.
+
+Pending external evidence: live Yahoo Test A, sleep/wake authentication continuity, boxes.dev mutation interception, credential-isolated broker, connected Test B from the cloud, Railway readback, actual private-volume restore and the full-league accuracy/cost pilot. No code test turns these gates green.

@@ -5,6 +5,7 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY app ./app
 COPY public ./public
 COPY prompts ./prompts
+COPY scripts/validate-collector-output.mjs ./scripts/validate-collector-output.mjs
 COPY docker-entrypoint.sh ./
 ENV NODE_ENV=production HOST=0.0.0.0 DATA_DIR=/data
 ENTRYPOINT ["sh", "/app/docker-entrypoint.sh"]
