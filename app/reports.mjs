@@ -58,7 +58,7 @@ function categoryCoverage(matchups) {
   return { complete: missing.length === 0, expected_observations: matchups.reduce((sum, row) => sum + (row.teams?.length || 0), 0) * categoryKeys.length, missing };
 }
 
-const appliedOutcome = outcome => outcome?.kind === 'action_outcome' && outcome?.execution_mode === 'live' && outcome?.outcome === 'applied' && !outcome?.requires_reconciliation && outcome?.id && outcome?.intent_id && outcome?.attempt_id && Array.isArray(outcome?.before_evidence_ids) && outcome.before_evidence_ids.length > 0 && Array.isArray(outcome?.after_evidence_ids) && outcome.after_evidence_ids.length > 0;
+const appliedOutcome = outcome => ['action_outcome', 'action_reconciliation'].includes(outcome?.kind) && outcome?.execution_mode === 'live' && outcome?.outcome === 'applied' && !outcome?.requires_reconciliation && outcome?.id && outcome?.intent_id && outcome?.attempt_id && Array.isArray(outcome?.before_evidence_ids) && outcome.before_evidence_ids.length > 0 && Array.isArray(outcome?.after_evidence_ids) && outcome.after_evidence_ids.length > 0;
 
 export function buildWeeklyReport(input, trustedContext = {}) {
   if (!input?.league_id || !input?.season || !Number.isInteger(input.week) || !Array.isArray(input.matchups)) throw new Error('Invalid weekly report input');

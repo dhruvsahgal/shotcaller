@@ -1,6 +1,6 @@
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { atomicJSON, canonicalDigest } from './store.mjs';
 import { actionClasses, signAuthorization, verifyAuthorization } from './permissions.mjs';
 import { strictInstant } from './time.mjs';
@@ -12,6 +12,7 @@ const identifier = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128
 const playerIds = operation => [operation.player_id, operation.add_player_id, operation.drop_player_id].filter(Boolean);
 const ilSlot = slot => typeof slot === 'string' && slot.startsWith('IL');
 const readbackFields = input => ({ outcome: input.outcome, before_evidence_ids: input.before_evidence_ids, after_evidence_ids: input.after_evidence_ids, visible_state: input.visible_state });
+const proposalFields = ['version', 'action_class', 'league_id', 'scoring_date', 'expires_at', 'operation', 'preconditions', 'source_snapshot_ids'];
 
 export const actionAttemptTransitions = Object.freeze({
   proposed: Object.freeze(['blocked', 'shadowed', 'preflight_passed']),
@@ -35,10 +36,11 @@ function assertTransition(map, from, to) {
 }
 
 export function validateActionProposal(input, now = Date.now()) {
-  if (!exact(input, ['version', 'action_class', 'league_id', 'scoring_date', 'expires_at', 'operation', 'preconditions', 'source_snapshot_ids'])) throw new Error('Invalid action proposal fields');
+  if (!(exact(input, proposalFields) || exact(input, [...proposalFields, 'decision_id']))) throw new Error('Invalid action proposal fields');
   if (input.version !== 1 || !actionClasses.includes(input.action_class) || !/^\d{1,12}$/.test(input.league_id) || !date(input.scoring_date) || !strictInstant(input.expires_at) || Date.parse(input.expires_at) <= now) throw new Error('Invalid action proposal scope or expiry');
   if (!Array.isArray(input.source_snapshot_ids) || !input.source_snapshot_ids.length || input.source_snapshot_ids.some(id => !identifier(id))) throw new Error('Invalid action proposal evidence');
   if (!input.preconditions || typeof input.preconditions !== 'object' || Array.isArray(input.preconditions)) throw new Error('Invalid action preconditions');
+  if (Object.hasOwn(input, 'decision_id') && !(input.decision_id === null || identifier(input.decision_id))) throw new Error('Invalid action decision link');
   const operation = input.operation;
   if (input.action_class === 'lineup_move' && (!exact(operation, ['player_id', 'from_slot', 'to_slot']) || ![operation.player_id, operation.from_slot, operation.to_slot].every(identifier))) throw new Error('Invalid lineup move');
   if (input.action_class === 'il_move' && (!exact(operation, ['player_id', 'from_slot', 'to_slot']) || ![operation.player_id, operation.from_slot, operation.to_slot].every(identifier) || ilSlot(operation.from_slot) === ilSlot(operation.to_slot))) throw new Error('Invalid IL move');
@@ -97,9 +99,9 @@ export class ActionService {
   assertLiveConfiguration(intent) {
     if (!this.liveConfigurationAllows(intent)) throw new Error('Live action mode, promotion gates, or enabled class changed');
   }
-  async validateEvidence(ids, phase, intentId) {
+  async validateEvidence(ids, phase, intentId, attemptId = null) {
     if (!Array.isArray(ids) || !ids.length || ids.some(id => !identifier(id)) || new Set(ids).size !== ids.length) throw new Error(`Invalid ${phase} action evidence`);
-    if (this.evidenceValidator) await this.evidenceValidator({ ids: [...ids], phase, intent_id: intentId });
+    if (this.evidenceValidator) await this.evidenceValidator({ ids: [...ids], phase, intent_id: intentId, attempt_id: attemptId });
     return [...ids];
   }
   validateFreshObservation(observedAt) {
@@ -114,6 +116,23 @@ export class ActionService {
     if (rows.length > 1) throw new Error('Action attempt has conflicting transitions');
     return rows[0] || null;
   }
+  async saveEvidence(id, input) {
+    if (!exact(input, ['phase', 'attempt_id', 'observed_at', 'media_type', 'sha256', 'content_base64']) || !['before', 'after'].includes(input.phase) || !(input.attempt_id === null || identifier(input.attempt_id)) || !strictInstant(input.observed_at) || !['application/json', 'text/plain', 'image/png', 'image/jpeg'].includes(input.media_type) || !/^[a-f0-9]{64}$/.test(input.sha256) || typeof input.content_base64 !== 'string') throw new Error('Invalid action evidence upload');
+    const intent = await this.store.read(id, 'action-intents');
+    if (input.attempt_id) {
+      const attempt = await this.store.read(input.attempt_id, 'action-attempts');
+      if (attempt.intent_id !== id) throw new Error('Invalid action evidence attempt binding');
+    }
+    const content = Buffer.from(input.content_base64, 'base64');
+    if (!content.length || content.length > 1_048_576 || content.toString('base64') !== input.content_base64 || createHash('sha256').update(content).digest('hex') !== input.sha256) throw new Error('Invalid action evidence content');
+    const identity = { intent_id: intent.id, attempt_id: input.attempt_id, phase: input.phase, observed_at: input.observed_at, media_type: input.media_type, bytes: content.length, sha256: input.sha256 };
+    const recordId = `action-evidence-${canonicalDigest(identity).slice(0, 32)}`;
+    try { return await this.store.read(recordId, 'action-evidence'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const record = { schema_version: 1, kind: 'action_evidence', id: recordId, ...identity, stored_at: new Date(this.now()).toISOString(), content_base64: input.content_base64 };
+    record.content_hash = canonicalDigest(record);
+    return this.store.publish(record, 'action-evidence');
+  }
   async control() {
     try { return JSON.parse(await readFile(join(this.root, 'control.json'), 'utf8')); }
     catch (error) { if (error.code === 'ENOENT') return { stop_switch: true, human_takeover: false, updated_at: null }; throw error; }
@@ -127,7 +146,7 @@ export class ActionService {
     if (input.league_id !== this.config.leagueId) throw new Error('Action league does not match this ShotCaller instance');
     const mode = this.config.actionMode === 'live' && this.config.actionGatesVerified && this.config.actionEnabledClasses.includes(input.action_class) ? 'live' : 'shadow';
     const createdAt = new Date(this.now()).toISOString();
-    const base = { schema_version: 1, kind: 'action_intent', action_class: input.action_class, league_id: input.league_id, scoring_date: input.scoring_date, expires_at: input.expires_at, operation: input.operation, preconditions: input.preconditions, source_snapshot_ids: [...new Set(input.source_snapshot_ids)].sort(), execution_mode: mode, created_at: createdAt, stored_at: createdAt };
+    const base = { schema_version: 1, kind: 'action_intent', action_class: input.action_class, league_id: input.league_id, scoring_date: input.scoring_date, expires_at: input.expires_at, operation: input.operation, preconditions: input.preconditions, source_snapshot_ids: [...new Set(input.source_snapshot_ids)].sort(), decision_id: input.decision_id || null, execution_mode: mode, created_at: createdAt, stored_at: createdAt };
     const intentDigest = canonicalDigest(base), id = `action-${intentDigest.slice(0, 32)}`;
     await this.validateEvidence(base.source_snapshot_ids, 'source', id);
     return this.store.publish({ ...base, id, intent_digest: intentDigest, content_hash: intentDigest }, 'action-intents');
@@ -167,7 +186,7 @@ export class ActionService {
       const successor = await this.attemptSuccessor(attempt.id);
       if (successor) return successor.status === 'prepared' ? { status: 'reconcile_required', intent_id: id, reason: 'This preflight already armed a mutation; reconcile Yahoo state before any retry.' } : successor;
       const observedAt = this.validateFreshObservation(input.observed_at);
-      const evidence = await this.validateEvidence(input.before_evidence_ids, 'arm', id);
+      const evidence = await this.validateEvidence(input.before_evidence_ids, 'arm', id, input.attempt_id);
       const preflight = { ...preflightAction(intent, input.state, control, this.now()), state_observed_at: observedAt };
       if (!preflight.allowed) {
         assertTransition(actionAttemptTransitions, attempt.status, 'blocked');
@@ -209,8 +228,8 @@ export class ActionService {
       if (!exact(input, ['attempt_id', 'outcome', 'before_evidence_ids', 'after_evidence_ids', 'visible_state']) || !['applied', 'blocked', 'ambiguous', 'partial', 'shadowed'].includes(input.outcome) || !Array.isArray(input.before_evidence_ids) || !Array.isArray(input.after_evidence_ids)) throw new Error('Invalid action readback');
       const [intent, attempt] = await Promise.all([this.store.read(id, 'action-intents'), this.store.read(input.attempt_id, 'action-attempts')]);
       if (attempt.intent_id !== id) throw new Error('Invalid action attempt binding');
-      const beforeEvidence = await this.validateEvidence(input.before_evidence_ids, 'readback-before', id);
-      const afterEvidence = await this.validateEvidence(input.after_evidence_ids, 'readback-after', id);
+      const beforeEvidence = await this.validateEvidence(input.before_evidence_ids, 'readback-before', id, input.attempt_id);
+      const afterEvidence = await this.validateEvidence(input.after_evidence_ids, 'readback-after', id, input.attempt_id);
       const readbackDigest = canonicalDigest(readbackFields({ ...input, before_evidence_ids: beforeEvidence, after_evidence_ids: afterEvidence }));
       const previous = await this.latestReadback(input.attempt_id);
       if (previous?.readback_digest === readbackDigest) return previous;
@@ -234,9 +253,9 @@ export class ActionService {
     if (!['starting', 'thread_ready'].includes(result.status)) throw new Error('Action executor trigger failed');
     return { intent_id: id, status: 'accepted', execution_mode: intent.execution_mode };
   }
-  async status() {
+  async status({ limit = 10 } = {}) {
     await this.init();
-    const [intents, authorizations, attempts, outcomes, reconciliations, control] = await Promise.all(['action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations'].map(folder => this.store.list(folder)).concat(this.control()));
+    const [intents, authorizations, attempts, outcomes, reconciliations, control] = await Promise.all(['action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations'].map(folder => this.store.recent(folder, limit)).concat(this.control()));
     return { mode: this.config.actionMode, gates_verified: this.config.actionGatesVerified, enabled_classes: this.config.actionEnabledClasses, control, intents, authorizations: authorizations.map(row => ({ id: row.id, intent_id: row.intent_id, stored_at: row.stored_at })), attempts, outcomes, reconciliations };
   }
 }

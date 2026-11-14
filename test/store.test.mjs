@@ -60,4 +60,7 @@ test('a revised forecast appends history and survives a store restart', async ()
   assert.equal(history.length, 2);
   assert.ok(history.some(record => record.id === first.id));
   assert.ok(history.some(record => record.id === second.id));
+  const recent = await new Store(root).recent('forecasts', 1);
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0].id, second.id);
 });

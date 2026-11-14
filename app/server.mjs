@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store, atomicJSON } from './store.mjs';
-import { configuration } from './config.mjs';
+import { configuration, rotatedCredentialConfiguration } from './config.mjs';
 import { analyze } from './analysis.mjs';
 import { buildOverview } from './overview.mjs';
 import { historicalShapeError } from './import-validation.mjs';
@@ -50,7 +50,19 @@ export async function createApp(config, options = {}) {
   await loadSettings(config);
   const collectorRuns = new CollectorRuns(config, store, options.collectorOptions);
   const ingest = new CollectorIngest(config, store, options.collectorOptions);
-  const actions = new ActionService(config, store, options.actionOptions);
+  const actionEvidenceValidator = async ({ ids, phase, intent_id, attempt_id }) => {
+    if (phase === 'source') {
+      await Promise.all(ids.map(id => readEvidence(store, id)));
+      return;
+    }
+    const expectedPhase = phase === 'readback-after' ? 'after' : 'before';
+    for (const id of ids) {
+      const evidence = await store.read(id, 'action-evidence');
+      if (evidence.intent_id !== intent_id || evidence.phase !== expectedPhase) throw new Error('Invalid action evidence ownership');
+      if (expectedPhase === 'after' && evidence.attempt_id !== attempt_id) throw new Error('Invalid action evidence attempt binding');
+    }
+  };
+  const actions = new ActionService(config, store, { ...options.actionOptions, evidenceValidator: options.actionOptions?.evidenceValidator ?? actionEvidenceValidator });
   const usage = new ModelUsageLedger(config.dataDir, config.modelCallBudget);
   const collectorCredential = new RotatingCredential(config.dataDir, config.collectorToken);
   await collectorRuns.settings();
@@ -75,6 +87,7 @@ export async function createApp(config, options = {}) {
         res.writeHead(200, { 'Content-Type': type }); return res.end(await readFile(new URL(`../public/${file}`, import.meta.url)));
       }
       const actionId = /^\/api\/(?:executor\/)?actions\/([^/]+)(?:\/(authorize|prepare|arm|readback|dispatch|control))?$/.exec(url.pathname);
+      const actionEvidenceId = /^\/api\/executor\/actions\/([^/]+)\/evidence$/.exec(url.pathname);
       if (actionId && actionId[2] === 'authorize' && req.method === 'POST') {
         if (!authorized(req, config.approvalToken)) return send(401, { error: 'Dedicated manager approval credential required' });
         return send(201, await actions.authorize(decodeURIComponent(actionId[1]), await body(req)));
@@ -91,6 +104,11 @@ export async function createApp(config, options = {}) {
         if (actionId[2] === 'arm' && req.method === 'POST') return send(200, await actions.arm(id, await body(req)));
         if (actionId[2] === 'readback' && req.method === 'POST') return send(201, await actions.readback(id, await body(req)));
         return send(405, { error: 'Executor method not allowed' });
+      }
+      if (actionEvidenceId) {
+        if (!authorized(req, config.executorToken)) return send(401, { error: 'Dedicated executor credential required' });
+        if (req.method !== 'POST') return send(405, { error: 'Executor evidence method not allowed' });
+        return send(201, await actions.saveEvidence(decodeURIComponent(actionEvidenceId[1]), await body(req, 1_500_000)));
       }
       if (url.pathname === '/api/collector/capabilities' && req.method === 'POST') {
         const collectorSupplied = (req.headers.authorization || '').replace(/^Bearer /, '');
@@ -121,7 +139,12 @@ export async function createApp(config, options = {}) {
         return send(200, { storage, model_usage, collector_credential, collector });
       }
       if (req.method === 'POST' && url.pathname === '/api/operations/backup-manifest') return send(201, await archiveManifest(config.dataDir));
-      if (req.method === 'POST' && url.pathname === '/api/operations/collector-token') return send(200, await collectorCredential.rotate((await body(req)).token));
+      if (req.method === 'POST' && url.pathname === '/api/operations/collector-token') {
+        const next = rotatedCredentialConfiguration(config, 'collectorToken', (await body(req)).token);
+        const status = await collectorCredential.rotate(next.collectorToken);
+        config.collectorToken = next.collectorToken;
+        return send(200, status);
+      }
       if (req.method === 'POST' && url.pathname === '/api/actions') {
         const input = await body(req, 128000);
         await Promise.all((input.source_snapshot_ids || []).map(id => readEvidence(store, id)));
@@ -165,7 +188,7 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
-        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.list('forecasts'), store.list('optimizations'), store.list('evaluations'), store.list('reports'), store.latestForecast(), store.latest(), promptRead, actions.status(), usage.status()]);
+        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.recent('forecasts', 25), store.recent('optimizations', 1), store.recent('evaluations', 25), store.recent('reports', 25), store.latestForecast(), store.latest(), promptRead, actions.status({ limit: 10 }), usage.status()]);
         const intelligence = {
           forecasts: forecasts.map(row => ({ id: row.id, created_at: row.created_at, status: row.status, source_snapshot_ids: row.source_snapshot_ids, week: row.forecast.week })),
           optimization: optimizations[0]?.optimization || null,
@@ -217,7 +240,31 @@ export async function createApp(config, options = {}) {
       if (req.method === 'POST' && url.pathname === '/api/reports') {
         const input = await body(req, 2097152);
         if (String(input.league_id) !== String(config.leagueId)) return send(400, { error: 'Report league does not match this ShotCaller instance' });
-        const report = buildWeeklyReport(input);
+        const forecastRecord = input.forecast_id ? await store.read(input.forecast_id, 'forecasts') : await store.latestForecast();
+        const frozen = forecastRecord?.forecast;
+        const samePeriod = frozen && String(frozen.league_id) === String(config.leagueId) && String(frozen.season) === String(input.season) && frozen.week === input.week;
+        const decisionIds = [...new Set([...(input.decision_ids || []), ...(input.decisions || []).map(row => row?.id)].filter(Boolean))];
+        const evaluationIds = [...new Set([...(input.evaluation_ids || []), ...(input.evaluations || []).map(row => row?.id)].filter(Boolean))];
+        const [decisions, evaluations, intents, outcomes, reconciliations, seasonIndex] = await Promise.all([
+          Promise.all(decisionIds.map(id => store.read(id, 'decisions'))),
+          Promise.all(evaluationIds.map(id => store.read(id, 'evaluations'))),
+          store.list('action-intents'), store.list('action-outcomes'), store.list('action-reconciliations'), store.seasonReportIndex(input.season)
+        ]);
+        const latestOutcomes = new Map();
+        for (const row of [...outcomes, ...reconciliations].sort((a, b) => String(a.recorded_at).localeCompare(String(b.recorded_at)))) latestOutcomes.set(row.attempt_id, row);
+        const outcomeByIntent = new Map([...latestOutcomes.values()].filter(row => row.outcome === 'applied' && !row.requires_reconciliation).map(row => [row.intent_id, row]));
+        const decisionActionLinks = intents.filter(row => row.decision_id && outcomeByIntent.has(row.id)).map(row => ({ decision_id: row.decision_id, intent_id: row.id, outcome_id: outcomeByIntent.get(row.id).id }));
+        const seasonHistory = await Promise.all(seasonIndex.reports.map(row => store.read(row.id, 'reports')));
+        const previousReport = seasonHistory.filter(row => row.report.week < input.week).at(-1) || null;
+        const recapId = input.recap_decision_id || input.recap_decision?.id || null;
+        const recapDecision = recapId ? await store.read(recapId, 'decisions') : null;
+        const trustedEvaluation = evaluations.map(row => row.evaluation).find(row => row.forecast_id === forecastRecord?.id && String(row.league_id) === String(config.leagueId) && String(row.season) === String(input.season) && row.week === input.week && ['final', 'partial'].includes(row.status));
+        const report = buildWeeklyReport({ ...input, matchups: trustedEvaluation?.verified_outcome_matchups || [], decisions, evaluations, recap_decision: recapDecision }, {
+          frozen_matchup_topology: samePeriod ? frozen.matchups.map(row => ({ id: row.id, team_ids: row.team_ids })) : [],
+          matchup_topology_source_id: samePeriod ? forecastRecord.id : null,
+          action_outcomes: [...latestOutcomes.values()], decision_action_links: decisionActionLinks,
+          season_history_ids: seasonHistory.map(row => row.id), previous_report_id: previousReport?.id || null
+        });
         await Promise.all(report.source_snapshot_ids.map(id => readEvidence(store, id)));
         return send(201, await store.saveReport(report));
       }

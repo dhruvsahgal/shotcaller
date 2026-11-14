@@ -7,6 +7,8 @@ import { compareObservations, observationEnvelope, observationScopeKey } from '.
 import { attemptEnvelope, runEnvelope } from './runs.mjs';
 import { canonical } from './value.mjs';
 
+const boundedHistoryFolders = new Set(['forecasts', 'optimizations', 'evaluations', 'reports', 'action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations']);
+
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 export const canonicalDigest = value => digest(canonical(value));
 export function safeId(id) {
@@ -25,10 +27,11 @@ export class Store {
     this.initializing = null;
     this.observationIndexUpdating = Promise.resolve();
     this.reportIndexUpdating = Promise.resolve();
+    this.historyIndexUpdating = new Map();
   }
   async init() {
     if (!this.initializing) {
-      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'optimizations', 'evaluations', 'reports', 'action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
+      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'optimizations', 'evaluations', 'reports', 'action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations', 'action-evidence', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
     }
     await this.initializing;
   }
@@ -48,6 +51,7 @@ export class Store {
       if (previous.content_hash !== record.content_hash) throw new Error('Immutable record conflict');
       return previous;
     } finally { await rm(temp, { recursive: true, force: true }); }
+    if (boundedHistoryFolders.has(folder)) await this.updateHistoryIndex(folder, record);
     return record;
   }
   async saveCapture(capture) {
@@ -141,7 +145,52 @@ export class Store {
     await this.init();
     const ids = (await readdir(join(this.root, folder))).filter(id => !id.startsWith('.'));
     const records = await Promise.all(ids.map(id => this.read(id, folder)));
-    return records.sort((a, b) => b.stored_at.localeCompare(a.stored_at));
+    const timestamp = row => String(row.stored_at ?? row.recorded_at ?? row.created_at ?? '');
+    return records.sort((a, b) => timestamp(b).localeCompare(timestamp(a)) || b.id.localeCompare(a.id));
+  }
+  async historyIndex(folder) {
+    if (!boundedHistoryFolders.has(folder)) throw new Error('Unsupported bounded history folder');
+    try { return JSON.parse(await readFile(join(this.root, 'indexes', `history-${folder}.json`), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return this.rebuildHistoryIndex(folder); throw error; }
+  }
+  async rebuildHistoryIndex(folder) {
+    const rows = await this.list(folder);
+    const index = {
+      schema_version: 1,
+      folder,
+      records: rows.map(row => ({ id: row.id, stored_at: row.stored_at ?? row.recorded_at ?? row.created_at ?? null }))
+    };
+    await atomicJSON(join(this.root, 'indexes', `history-${folder}.json`), index);
+    return index;
+  }
+  async updateHistoryIndex(folder, record) {
+    const update = async () => {
+      let index;
+      try { index = JSON.parse(await readFile(join(this.root, 'indexes', `history-${folder}.json`), 'utf8')); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        index = { schema_version: 1, folder, records: [] };
+      }
+      const pointer = { id: record.id, stored_at: record.stored_at ?? record.recorded_at ?? record.created_at ?? new Date().toISOString() };
+      const records = [pointer, ...index.records.filter(row => row.id !== record.id)].sort((a, b) => String(b.stored_at).localeCompare(String(a.stored_at)));
+      const next = { schema_version: 1, folder, records };
+      await atomicJSON(join(this.root, 'indexes', `history-${folder}.json`), next);
+      return next;
+    };
+    const previous = this.historyIndexUpdating.get(folder) ?? Promise.resolve();
+    const pending = previous.then(update, update);
+    this.historyIndexUpdating.set(folder, pending.then(() => undefined, () => undefined));
+    return pending;
+  }
+  async recent(folder, limit = 10) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid history limit');
+    const index = await this.historyIndex(folder);
+    const rows = [];
+    for (const pointer of index.records.slice(0, limit)) {
+      try { rows.push(await this.read(pointer.id, folder)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    return rows;
   }
   async latest() {
     try { return this.read(JSON.parse(await readFile(join(this.root, 'latest.json'), 'utf8')).id); }
@@ -172,7 +221,7 @@ export class Store {
     return this.publish(saved, 'optimizations');
   }
   async saveEvaluation(evaluation) {
-    if (evaluation?.kind !== 'forecast_evaluation' || !['final', 'provisional'].includes(evaluation.status) || !evaluation.correlation_key) throw new Error('Invalid forecast evaluation');
+    if (evaluation?.kind !== 'forecast_evaluation' || !['final', 'partial', 'provisional'].includes(evaluation.status) || !evaluation.correlation_key) throw new Error('Invalid forecast evaluation');
     if (evaluation.correction_of) {
       try { await this.read(evaluation.correction_of, 'evaluations'); }
       catch (error) { if (error.code === 'ENOENT') throw new Error('Evaluation correction references an unknown record'); throw error; }
@@ -182,7 +231,7 @@ export class Store {
     return this.publish(saved, 'evaluations');
   }
   async saveReport(report) {
-    if (report?.kind !== 'weekly_report' || !['final', 'provisional'].includes(report.status) || !Number.isInteger(report.week)) throw new Error('Invalid weekly report');
+    if (report?.kind !== 'weekly_report' || !['final', 'partial', 'provisional'].includes(report.status) || !Number.isInteger(report.week)) throw new Error('Invalid weekly report');
     if (report.correction_of) {
       try { await this.read(report.correction_of, 'reports'); }
       catch (error) { if (error.code === 'ENOENT') throw new Error('Report correction references an unknown record'); throw error; }
@@ -193,6 +242,15 @@ export class Store {
     const record = await this.publish(saved, 'reports', renderWeeklyReport(report));
     await this.updateSeasonReportIndex(report.season);
     return record;
+  }
+  async seasonReportIndex(season) {
+    await this.init();
+    const id = safeId(String(season));
+    try { return JSON.parse(await readFile(join(this.root, 'indexes', `season-${id}.json`), 'utf8')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      return { schema_version: 1, kind: 'season_report_index', season: String(season), reports: [] };
+    }
   }
   async updateSeasonReportIndex(season) {
     const update = async () => {

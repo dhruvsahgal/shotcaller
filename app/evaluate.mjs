@@ -102,9 +102,10 @@ export function evaluateForecast({ forecast_record, outcome, baseline_record = n
     league_id: String(forecast.league_id), season: String(forecast.season), week: forecast.week,
     correlation_key: `${forecast.league_id}:${forecast.season}:${forecast.week}`,
     independent_validation_units: status === 'final' ? 1 : 0, source_snapshot_ids: unique([...sourceIds(forecast_record), ...sourceIds(outcome)]),
-    correction_of, outcome_id: outcome.id || null, topology_coverage: topology, category_coverage: categoryCoverage, caveats, matchups: matchupEvaluations
+    correction_of, outcome_id: outcome.id || null, topology_coverage: topology, category_coverage: categoryCoverage, caveats,
+    verified_outcome_matchups: structuredClone(outcome.matchups), matchups: matchupEvaluations
   };
-  evaluation.input_hash = canonicalDigest({ forecast_id: evaluation.forecast_id, outcome_id: evaluation.outcome_id, baseline_forecast_id: evaluation.baseline_forecast_id, correction_of, source_snapshot_ids: evaluation.source_snapshot_ids });
+  evaluation.input_hash = canonicalDigest({ forecast_id: evaluation.forecast_id, outcome_id: evaluation.outcome_id, baseline_forecast_id: evaluation.baseline_forecast_id, correction_of, source_snapshot_ids: evaluation.source_snapshot_ids, verified_outcome_matchups: evaluation.verified_outcome_matchups });
   return evaluation;
 }
 
