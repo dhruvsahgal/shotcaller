@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { digest } from './store.mjs';
 
-export const tasks = ['recommendation', 'opponent_model', 'valuation', 'research_synthesis', 'followup'];
+export const tasks = ['recommendation', 'opponent_model', 'valuation', 'research_synthesis', 'plan_optimization', 'weekly_review', 'recap_draft', 'followup'];
 export async function promptInfo(path) {
   const text = await readFile(path, 'utf8');
   if (!text.trim()) throw new Error('ShotCaller master prompt is empty');
