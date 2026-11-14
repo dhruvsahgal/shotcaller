@@ -14,6 +14,9 @@ import { loadSettings, saveSettings, setupStatus, saveYahooState } from './setup
 import { buildForecast, validateForecastInput } from './forecast.mjs';
 import { CollectorRuns } from './collector-runs.mjs';
 import { CollectorIngest, ingestLimits } from './ingest.mjs';
+import { optimizePlans } from './optimize.mjs';
+import { evaluateForecast, summarizeEvaluations } from './evaluate.mjs';
+import { buildWeeklyReport } from './reports.mjs';
 
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/overview.js': ['overview.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
 function authorized(req, token = '') {
@@ -32,6 +35,10 @@ async function bytes(req, limit) {
     parts.push(part);
   }
   return Buffer.concat(parts);
+}
+async function readEvidence(store, id) {
+  try { return await store.read(id); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; return store.read(id, 'observations'); }
 }
 export async function createApp(config, options = {}) {
   if (config.token.length < 24) throw new Error('APP_TOKEN must contain at least 24 characters');
@@ -103,11 +110,19 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
-        const [records, observations, decisions, latestForecast, latest, prompt] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.latestForecast(), store.latest(), promptRead]);
-        const overview = buildOverview(records, decisions, config.leagueId, observations);
-        const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
+        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.list('forecasts'), store.list('optimizations'), store.list('evaluations'), store.list('reports'), store.latestForecast(), store.latest(), promptRead]);
+        const intelligence = {
+          forecasts: forecasts.map(row => ({ id: row.id, created_at: row.created_at, status: row.status, source_snapshot_ids: row.source_snapshot_ids, week: row.forecast.week })),
+          optimization: optimizations[0]?.optimization || null,
+          evaluation: evaluations[0]?.evaluation || null,
+          evaluation_summary: summarizeEvaluations(evaluations),
+          report: reports[0]?.report || null,
+          reports: reports.map(row => ({ id: row.id, stored_at: row.stored_at, status: row.report.status, week: row.report.week, correction_of: row.report.correction_of, source_snapshot_ids: row.report.source_snapshot_ids }))
+        };
+        const overview = buildOverview(records, decisions, config.leagueId, observations, intelligence);
+        const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, source_snapshot_ids: latestForecast.source_snapshot_ids, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
         const evidence = [...records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload)), ...observations];
-        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, decisions });
+        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, intelligence, decisions });
       }
       if (req.method === 'GET' && /^\/api\/snapshots\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1))));
       if (req.method === 'GET' && /^\/api\/forecasts\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1)), 'forecasts'));
@@ -122,6 +137,32 @@ export async function createApp(config, options = {}) {
           if (sourceLeague == null || String(sourceLeague) !== String(config.leagueId)) return send(400, { error: 'Forecast source is not scoped to this league' });
         }
         return send(201, await store.saveForecast(buildForecast(input)));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/optimizations') {
+        const input = await body(req, 2097152);
+        if (input.forecast_input?.league_id !== config.leagueId) return send(400, { error: 'Optimization league does not match this ShotCaller instance' });
+        for (const id of input.forecast_input?.source_snapshot_ids || []) {
+          const source = await store.read(id);
+          const sourceLeague = source.league_id ?? source.payload?.league_id;
+          if (sourceLeague == null || String(sourceLeague) !== String(config.leagueId)) return send(400, { error: 'Optimization source is not scoped to this league' });
+        }
+        return send(201, await store.saveOptimization(optimizePlans(input)));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/evaluations') {
+        const input = await body(req, 1048576);
+        const forecastRecord = await store.read(input.forecast_id, 'forecasts');
+        if (String(forecastRecord.forecast.league_id) !== String(config.leagueId)) return send(400, { error: 'Evaluation league does not match this ShotCaller instance' });
+        const baselineRecord = input.baseline_forecast_id ? await store.read(input.baseline_forecast_id, 'forecasts') : null;
+        for (const id of input.outcome?.source_snapshot_ids || []) await readEvidence(store, id);
+        const evaluation = evaluateForecast({ forecast_record: forecastRecord, baseline_record: baselineRecord, outcome: input.outcome, correction_of: input.correction_of || null });
+        return send(201, await store.saveEvaluation(evaluation));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/reports') {
+        const input = await body(req, 2097152);
+        if (String(input.league_id) !== String(config.leagueId)) return send(400, { error: 'Report league does not match this ShotCaller instance' });
+        const report = buildWeeklyReport(input);
+        for (const id of report.source_snapshot_ids) await readEvidence(store, id);
+        return send(201, await store.saveReport(report));
       }
       if (req.method === 'POST' && url.pathname === '/api/refresh') {
         if (refreshing || configuring) return send(409, { error: 'A refresh or setup change is already running' });

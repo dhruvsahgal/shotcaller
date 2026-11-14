@@ -24,10 +24,11 @@ export class Store {
     this.root = root;
     this.initializing = null;
     this.observationIndexUpdating = Promise.resolve();
+    this.reportIndexUpdating = Promise.resolve();
   }
   async init() {
     if (!this.initializing) {
-      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
+      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'optimizations', 'evaluations', 'reports', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
     }
     await this.initializing;
   }
@@ -163,5 +164,47 @@ export class Store {
     const record = await this.publish(saved, 'forecasts');
     await atomicJSON(join(this.root, 'latest-forecast.json'), { id: record.id });
     return record;
+  }
+  async saveOptimization(optimization) {
+    if (optimization?.kind !== 'optimization_result' || !Array.isArray(optimization.plans)) throw new Error('Invalid optimization');
+    const saved = { schema_version: 1, kind: 'optimization_record', id: `optimization-${randomUUID()}`, stored_at: new Date().toISOString(), optimization };
+    saved.content_hash = canonicalDigest(optimization);
+    return this.publish(saved, 'optimizations');
+  }
+  async saveEvaluation(evaluation) {
+    if (evaluation?.kind !== 'forecast_evaluation' || !['final', 'provisional'].includes(evaluation.status) || !evaluation.correlation_key) throw new Error('Invalid forecast evaluation');
+    if (evaluation.correction_of) {
+      try { await this.read(evaluation.correction_of, 'evaluations'); }
+      catch (error) { if (error.code === 'ENOENT') throw new Error('Evaluation correction references an unknown record'); throw error; }
+    }
+    const saved = { schema_version: 1, kind: 'evaluation_record', id: `evaluation-${randomUUID()}`, stored_at: new Date().toISOString(), evaluation };
+    saved.content_hash = canonicalDigest(evaluation);
+    return this.publish(saved, 'evaluations');
+  }
+  async saveReport(report) {
+    if (report?.kind !== 'weekly_report' || !['final', 'provisional'].includes(report.status) || !Number.isInteger(report.week)) throw new Error('Invalid weekly report');
+    if (report.correction_of) {
+      try { await this.read(report.correction_of, 'reports'); }
+      catch (error) { if (error.code === 'ENOENT') throw new Error('Report correction references an unknown record'); throw error; }
+    }
+    const saved = { schema_version: 1, kind: 'report_record', id: `report-${randomUUID()}`, stored_at: new Date().toISOString(), report };
+    saved.content_hash = canonicalDigest(report);
+    const { renderWeeklyReport } = await import('./reports.mjs');
+    const record = await this.publish(saved, 'reports', renderWeeklyReport(report));
+    await this.updateSeasonReportIndex(report.season);
+    return record;
+  }
+  async updateSeasonReportIndex(season) {
+    const update = async () => {
+      const rows = (await this.list('reports')).filter(row => String(row.report.season) === String(season)).sort((a, b) => a.report.week - b.report.week || a.stored_at.localeCompare(b.stored_at));
+      const index = { schema_version: 1, kind: 'season_report_index', season: String(season), reports: rows.map(row => ({ id: row.id, week: row.report.week, status: row.report.status, stored_at: row.stored_at, correction_of: row.report.correction_of, source_snapshot_ids: row.report.source_snapshot_ids })) };
+      await atomicJSON(join(this.root, 'indexes', `season-${safeId(String(season))}.json`), index);
+      const markdown = [`# Season ${season} review history`, '', ...index.reports.map(row => `- Week ${row.week} · ${row.status} · [${row.id}](../reports/${row.id}/brief.md)${row.correction_of ? ` · corrects ${row.correction_of}` : ''}`), ''].join('\n');
+      await writeFile(join(this.root, 'indexes', `season-${safeId(String(season))}.md`), markdown, { mode: 0o600 });
+      return index;
+    };
+    const pending = this.reportIndexUpdating.then(update, update);
+    this.reportIndexUpdating = pending.then(() => undefined, () => undefined);
+    return pending;
   }
 }

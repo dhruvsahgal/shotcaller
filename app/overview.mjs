@@ -103,7 +103,7 @@ function observationOverview(records, leagueId) {
   };
 }
 
-export function buildOverview(records = [], decisions = [], leagueId = null, observations = []) {
+export function buildOverview(records = [], decisions = [], leagueId = null, observations = [], intelligence = {}) {
   const scopedObservations = new Map();
   for (const record of [...records, ...observations]) {
     if (record?.kind === 'observation') scopedObservations.set(record.id, record);
@@ -200,6 +200,7 @@ export function buildOverview(records = [], decisions = [], leagueId = null, obs
     roster, team_log: teamLog, league, waivers, transactions: [...transactions.values()],
     status: statusEntry ? { ...structuredClone(statusEntry.payload.roster_status), meta: statusEntry.meta } : null,
     recommendation: recommendationEntry ? { ...structuredClone(recommendationEntry.payload.recommendation), meta: recommendationEntry.meta } : null,
-    documents: [...documents.values()].sort((a, b) => a.path.localeCompare(b.path)), journal: [...journal.values()].sort(journalRecent), gaps
+    documents: [...documents.values()].sort((a, b) => a.path.localeCompare(b.path)), journal: [...journal.values()].sort(journalRecent),
+    intelligence: structuredClone(intelligence), gaps
   };
 }

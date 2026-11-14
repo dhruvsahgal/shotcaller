@@ -179,3 +179,11 @@ test('scoped observations keep teams and scoring periods separate', () => {
   assert.equal(output.observations.scopes.find(row => row.scope.scoring_period.key === '4').current.id, 'week-4');
   assert.equal(buildOverview(records, [], '123').observations.scopes.length, 4);
 });
+
+test('overview projects intelligence records without changing their source identities', () => {
+  const intelligence = { report: { week: 4, status: 'final', source_snapshot_ids: ['source-a', 'source-b'] } };
+  const output = buildOverview([], [], '123', [], intelligence);
+  assert.deepEqual(output.intelligence, intelligence);
+  intelligence.report.source_snapshot_ids.push('mutated');
+  assert.deepEqual(output.intelligence.report.source_snapshot_ids, ['source-a', 'source-b']);
+});

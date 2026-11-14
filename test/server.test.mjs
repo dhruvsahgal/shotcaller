@@ -44,6 +44,17 @@ test('API protects private evidence and handles a failed refresh without fake su
     assert.equal(withForecast.forecast.input,undefined);
     const frozen = await (await fetch(`${base}/api/forecasts/${forecastRecord.id}`,{headers})).json();
     assert.deepEqual(frozen.forecast.input,forecastInput);
+    const outcomeStats={fgm:6,fga:12,ftm:2,fta:2,three_pm:2,pts:16,oreb:1,reb:6,ast:5,stl:1,blk:1};
+    const evaluationResponse=await fetch(`${base}/api/evaluations`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({forecast_id:forecastRecord.id,outcome:{id:'outcome-1',status:'final',expected_matchups:1,finalized_at:'2026-11-16T08:00:00Z',source_snapshot_ids:[importedRecord.id],matchups:[{id:'m1',status:'final',teams:[{id:'a',stats:outcomeStats,usable_starts:1},{id:'b',stats:{...outcomeStats,pts:12},usable_starts:1}]}]}})});
+    assert.equal(evaluationResponse.status,201);
+    const evaluationRecord=await evaluationResponse.json();
+    assert.deepEqual(evaluationRecord.evaluation.source_snapshot_ids,[importedRecord.id]);
+    const reportResponse=await fetch(`${base}/api/reports`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({league_id:config.leagueId,season:'2026',week:4,expected_matchups:1,matchups:[{id:'m1',status:'final',source_snapshot_ids:[importedRecord.id],teams:[{id:'a',name:'A',stats:outcomeStats},{id:'b',name:'B',stats:{...outcomeStats,pts:12}}]}],evaluations:[evaluationRecord],decisions:[],actions:[],lineup_days:[]})});
+    assert.equal(reportResponse.status,201);
+    const withIntelligence=await (await fetch(`${base}/api/state`,{headers})).json();
+    assert.deepEqual(withIntelligence.intelligence.evaluation.source_snapshot_ids,[importedRecord.id]);
+    assert.deepEqual(withIntelligence.intelligence.report.source_snapshot_ids,[importedRecord.id]);
+    assert.equal(withIntelligence.intelligence.evaluation_summary.independent_validation_weeks,1);
     assert.equal((await fetch(`${base}/api/forecasts/forecast-missing`,{headers})).status,404);
     const importPayload=payload=>fetch(`${base}/api/import`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const foreignResponse = await importPayload({snapshot_id:'foreign',league_id:'999',source:{type:'test'},kind:'collected_documents',documents:[]});

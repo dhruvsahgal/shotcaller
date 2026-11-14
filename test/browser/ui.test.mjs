@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { createApp } from '../../app/server.mjs';
 import { configuration } from '../../app/config.mjs';
 import { Store } from '../../app/store.mjs';
+import { buildWeeklyReport } from '../../app/reports.mjs';
 test('desktop and mobile dashboard exposes provenance, historical ranks and the canonical prompt', async () => {
   const config = { ...configuration(), dataDir: await mkdtemp(join(tmpdir(), 'shotcaller-ui-')), token: 'test-ui-access-token-at-least-24-characters' };
   const store = new Store(config.dataDir);
@@ -21,6 +22,8 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
   });
   const second = await store.importHistorical({ ...first.payload, snapshot_id: 'browser-test-alternate-source' });
   await store.importHistorical({snapshot_id:'partial-lineup',source:{type:'synthetic'},kind:'daily_lineup_audit',observed_date:'2026-10-30',days:[{date:'2026-10-30'},{date:'2026-10-31',playing_in_active_slots:[],benched_with_game:[],conflict:false}]});
+  await store.saveEvaluation({ schema_version: 1, kind: 'forecast_evaluation', status: 'final', evaluated_at: '2026-11-17T08:00:00Z', forecast_id: 'forecast-fixture', league_id: config.leagueId, season: '2026', week: 4, correlation_key: `${config.leagueId}:2026:4`, independent_validation_units: 1, source_snapshot_ids: ['ui-shared-source'], caveats: [], matchups: [] });
+  await store.saveReport(buildWeeklyReport({ league_id: config.leagueId, season: '2026', week: 4, expected_matchups: 1, matchups: [{ id: 'm1', status: 'final', source_snapshot_ids: ['ui-shared-source'], teams: [] }], evaluations: [], decisions: [], actions: [], lineup_days: [] }));
   const app = await createApp(config, { store });
   await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch();
@@ -35,6 +38,12 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     assert.equal(await page.locator('#overview').isVisible(), true);
     assert.match(await page.locator('#overview-league').innerText(), /Example Team A/);
     assert.match(await page.locator('#overview-coverage').innerText(), /does not automatically sync/);
+    await page.locator('[data-tab=matchup]').click();
+    assert.match(await page.locator('#matchup-intelligence').innerText(), /ui-shared-source/);
+    assert.match(await page.locator('#matchup-intelligence').innerText(), /1 independent finalized week/);
+    await page.locator('[data-tab=setup]').click();
+    assert.match(await page.locator('#operations-intelligence').innerText(), /Live roster mutations\s+Disabled/);
+    await page.locator('[data-tab=overview]').click();
     const lineupRows=await page.locator('#overview-lineups tbody tr').allTextContents();
     assert.match(lineupRows[0],/Not captured/);
     assert.equal(lineupRows[0].includes('None observed'),false);

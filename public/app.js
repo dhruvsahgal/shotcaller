@@ -52,6 +52,7 @@ function showTab(id) {
 }
 function renderState() {
   renderOverview(state.overview, id => attempt(async () => { if (state.decisions.some(d => d.id === id)) { showTab('decisions'); return; } showTab('evidence'); await selectSnapshot(id); }));
+  renderIntelligence();
   $('league-id').textContent = state.league_id;
   const latest = state.snapshots.find(s => s.id === state.latest_id);
   $('freshness').textContent = latest ? `Latest complete capture: ${latest.observed_at}. Check its period before making a move.` : 'Saved observations consolidated below · no complete automated Yahoo capture yet.';
@@ -95,6 +96,49 @@ function renderState() {
   if (!state.decisions.length) empty('journal', 'Your first decision brief will appear here, with its sources and prompt fingerprint.');
   $('prompt-hash').textContent = state.prompt.hash || state.prompt.error;
   $('prompt-text').textContent = state.prompt.text || '';
+}
+function evidenceLine(ids = []) { return ids.length ? ids.join(', ') : 'No linked source IDs'; }
+function ageLine(value) { const age = Date.now() - Date.parse(value); return Number.isFinite(age) && age >= 0 ? `${(age / 3600000).toFixed(1)} hours old` : 'Age unknown'; }
+function renderIntelligence() {
+  const intel = state.intelligence || {}, target = $('matchup-intelligence'); target.replaceChildren();
+  const forecast = state.forecast;
+  const summary = node('div', null, 'metrics');
+  const metric = (value, label) => { const box = node('div', null, 'metric'); box.append(node('strong', display(value)), node('span', label)); summary.append(box); };
+  metric(forecast ? `Week ${forecast.week}` : '—', 'Latest frozen forecast');
+  metric(forecast?.matchups?.length ?? 0, 'League matchups projected');
+  metric(intel.optimization?.recommendation?.acquisitions_reserved ?? '—', 'Acquisitions reserved');
+  metric(intel.evaluation_summary?.independent_validation_weeks ?? 0, 'Independent validation weeks');
+  target.append(summary);
+  if (forecast?.matchups?.length) {
+    const card = node('article', null, 'panel'); card.append(node('h3', 'All matchup forecasts'), node('p', `Created ${forecast.created_at} · ${forecast.status}. Sources: ${evidenceLine(forecast.source_snapshot_ids || intel.forecasts?.[0]?.source_snapshot_ids || [])}`, 'mono'));
+    card.append(table(['Matchup', 'Projected leader', 'Swingability', 'Swing categories'], forecast.matchups.map(row => [row.id, row.projected_leader || 'Unresolved', row.stability?.label || 'Unknown', Object.entries(row.category_outcomes || {}).filter(([, value]) => value === 'swing' || value === 'unknown').map(([key]) => key.toUpperCase()).join(', ') || 'None']))); target.append(card);
+  } else target.append(node('p', 'No frozen league forecast yet.', 'empty'));
+  if (intel.optimization) {
+    const optimization = node('article', null, 'panel'), rec = intel.optimization.recommendation;
+    optimization.append(node('h3', 'Optionality plan'), node('p', `${rec.kind.replaceAll('_', ' ')} · score ${rec.score} · uses ${rec.acquisitions_used}, reserves ${rec.acquisitions_reserved} · claim risk ${rec.comparison?.claim_risk ?? '—'}.`), node('p', `Status: ${intel.optimization.execution_status}. Sources: ${evidenceLine(intel.optimization.source_snapshot_ids)}`, 'mono'));
+    if (intel.optimization.fallbacks?.length) optimization.append(table(['Alternative', 'Moves', 'Score'], intel.optimization.fallbacks.map(row => [row.id, row.opportunity_ids.join(', ') || 'Hold', row.score])));
+    if (intel.optimization.next_reconsideration) optimization.append(node('p', `${intel.optimization.next_reconsideration.at || 'On evidence change'} · ${intel.optimization.next_reconsideration.reason}`, 'caveat'));
+    target.append(optimization);
+  }
+  if (intel.evaluation) {
+    const evaluation = node('article', null, 'panel'); evaluation.append(node('h3', `${intel.evaluation.status.toUpperCase()} forecast evaluation`), node('p', `Correlation: ${intel.evaluation.correlation_key}. ${intel.evaluation_summary.origins} forecast origin(s) across ${intel.evaluation_summary.independent_validation_weeks} independent finalized week(s).`), node('p', `Sources: ${evidenceLine(intel.evaluation.source_snapshot_ids)}`, 'mono')); target.append(evaluation);
+  }
+  if (intel.report) {
+    const report = node('article', null, 'panel'); report.append(node('h3', `Week ${intel.report.week} ${intel.report.status} review`), node('p', `${intel.report.finalized_matchups}/${intel.report.expected_matchups} matchups final · ${intel.report.lost_starts.total} lost usable starts · ${intel.report.decision_review.verified.length} verified decision action(s).`), node('p', `Sources: ${evidenceLine(intel.report.source_snapshot_ids)}`, 'mono'));
+    if (intel.report.caveats?.length) report.append(node('p', intel.report.caveats.join(' '), 'caveat'));
+    if (intel.report.recap) report.append(node('p', 'League recap is a draft and has not been authorized for sending.', 'caveat'));
+    target.append(report);
+  }
+  const operations = $('operations-intelligence'); operations.replaceChildren();
+  const latest = state.snapshots.find(row => row.id === state.latest_id);
+  operations.append(table(['Control', 'State', 'Evidence'], [
+    ['Yahoo refresh', state.refresh.status, state.refresh.detail],
+    ['Latest complete capture', latest?.observed_at ? ageLine(latest.observed_at) : 'None', latest ? `${latest.observed_at} · ${latest.id}` : 'No complete pointer'],
+    ['Master prompt', state.prompt.ready ? 'Ready' : 'Blocked', state.prompt.hash || state.prompt.error],
+    ['Decision model', state.model_configured ? 'Configured' : 'Not configured', 'Recommendations remain advice only'],
+    ['Live roster mutations', 'Disabled', 'Requires verified pilot and execution gates']
+  ]));
+  if (state.overview?.gaps?.length) operations.append(node('h3', 'Coverage gaps'), ...state.overview.gaps.map(gap => node('p', gap, 'caveat')));
 }
 async function load() {
   state = await api('state'); renderState();
