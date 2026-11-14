@@ -18,6 +18,7 @@ import { optimizePlans } from './optimize.mjs';
 import { evaluateForecast, summarizeEvaluations } from './evaluate.mjs';
 import { buildWeeklyReport } from './reports.mjs';
 import { ActionService } from './actions.mjs';
+import { archiveManifest, ModelUsageLedger, RotatingCredential, storageHealth } from './health.mjs';
 
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/overview.js': ['overview.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
 function authorized(req, token = '') {
@@ -49,6 +50,8 @@ export async function createApp(config, options = {}) {
   const collectorRuns = new CollectorRuns(config, store, options.collectorOptions);
   const ingest = new CollectorIngest(config, store, options.collectorOptions);
   const actions = new ActionService(config, store, options.actionOptions);
+  const usage = new ModelUsageLedger(config.dataDir, config.modelCallBudget);
+  const collectorCredential = new RotatingCredential(config.dataDir, config.collectorToken);
   await collectorRuns.settings();
   let refresh = { status: 'idle', detail: 'No refresh in this process', updated_at: null };
   try {
@@ -89,7 +92,8 @@ export async function createApp(config, options = {}) {
         return send(405, { error: 'Executor method not allowed' });
       }
       if (url.pathname === '/api/collector/capabilities' && req.method === 'POST') {
-        if (!authorized(req, config.token) && !authorized(req, config.collectorToken)) return send(401, { error: 'Collector broker authentication required' });
+        const collectorSupplied = (req.headers.authorization || '').replace(/^Bearer /, '');
+        if (!authorized(req, config.token) && !await collectorCredential.authenticate(collectorSupplied)) return send(401, { error: 'Collector broker authentication required' });
         return send(201, await ingest.mint(await body(req)));
       }
       if (['/api/collector/manifest', '/api/collector/commit', '/api/collector/readback'].includes(url.pathname) || /^\/api\/collector\/artifacts\/[^/]+$/.test(url.pathname)) {
@@ -111,6 +115,9 @@ export async function createApp(config, options = {}) {
       }
       if (!authorized(req, config.token)) return send(401, { error: 'Enter your ShotCaller access token' });
       if (req.method === 'GET' && url.pathname === '/api/actions') return send(200, await actions.status());
+      if (req.method === 'GET' && url.pathname === '/api/operations') return send(200, { storage: await storageHealth(config.dataDir, config.dataQuotaBytes), model_usage: await usage.status(), collector_credential: await collectorCredential.status(), collector: await collectorRuns.status() });
+      if (req.method === 'POST' && url.pathname === '/api/operations/backup-manifest') return send(201, await archiveManifest(config.dataDir));
+      if (req.method === 'POST' && url.pathname === '/api/operations/collector-token') return send(200, await collectorCredential.rotate((await body(req)).token));
       if (req.method === 'POST' && url.pathname === '/api/actions') {
         const input = await body(req, 128000);
         for (const id of input.source_snapshot_ids || []) await readEvidence(store, id);
@@ -124,6 +131,10 @@ export async function createApp(config, options = {}) {
       if (req.method === 'GET' && url.pathname === '/api/collector') return send(200, await collectorRuns.status());
       if (req.method === 'POST' && url.pathname === '/api/collector/settings') return send(200, await collectorRuns.configure(await body(req)));
       if (req.method === 'POST' && url.pathname === '/api/collector/run') return send(201, await collectorRuns.runNow(await body(req)));
+      if (req.method === 'POST' && url.pathname === '/api/collector/reconcile') {
+        const input = await body(req);
+        return send(201, await collectorRuns.reconcile(input.run_id, input));
+      }
       if (req.method === 'GET' && url.pathname === '/api/setup') return send(200, await setupStatus(config));
       if (req.method === 'POST' && ['/api/setup', '/api/setup/yahoo', '/api/import'].includes(url.pathname)) {
         if (refreshing || deciding || configuring) return send(409, { error: 'Wait for the current operation to finish' });
@@ -141,7 +152,7 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
-        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.list('forecasts'), store.list('optimizations'), store.list('evaluations'), store.list('reports'), store.latestForecast(), store.latest(), promptRead, actions.status()]);
+        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage, storage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.list('forecasts'), store.list('optimizations'), store.list('evaluations'), store.list('reports'), store.latestForecast(), store.latest(), promptRead, actions.status(), usage.status(), storageHealth(config.dataDir, config.dataQuotaBytes)]);
         const intelligence = {
           forecasts: forecasts.map(row => ({ id: row.id, created_at: row.created_at, status: row.status, source_snapshot_ids: row.source_snapshot_ids, week: row.forecast.week })),
           optimization: optimizations[0]?.optimization || null,
@@ -153,7 +164,7 @@ export async function createApp(config, options = {}) {
         const overview = buildOverview(records, decisions, config.leagueId, observations, intelligence);
         const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, source_snapshot_ids: latestForecast.source_snapshot_ids, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
         const evidence = [...records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload)), ...observations];
-        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, intelligence, actions: actionState, decisions });
+        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, intelligence, actions: actionState, operations: { model_usage: modelUsage, storage }, decisions });
       }
       if (req.method === 'GET' && /^\/api\/snapshots\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1))));
       if (req.method === 'GET' && /^\/api\/forecasts\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1)), 'forecasts'));

@@ -12,6 +12,8 @@ One Railway service. One persistent volume of JSON and Markdown. No database ser
 4. Deploy, then generate a public HTTPS domain. The health endpoint is `/health`; the app listens on Railway's `PORT`.
 5. Open the app, enter your token, and go to **Setup**. Set your league ID and team count, connect your model, and upload your Yahoo browser session.
 
+Set `MODEL_CALL_BUDGET` before enabling model-backed work. Set `DATA_QUOTA_BYTES` to the usable volume capacity if you want quota percentage reporting. Both model reservations and observed token usage persist on the volume. See the [operating runbook](docs/operations/runbook.md) before enabling recurring collection or any action class.
+
 The container already sets `HOST=0.0.0.0` and `DATA_DIR=/data`. Do not point storage at an ephemeral directory. No model key, Yahoo login or private league data is included in this repository.
 
 ## Connect Yahoo
@@ -44,6 +46,8 @@ An existing authenticated remote Chromium connection can also be saved in Setup.
 - Private configuration, token-protected APIs and a decision journal with evidence references and prompt fingerprints.
 
 The app remains advice-only by default. It can persist bounded action proposals and shadow preflights, but live Yahoo mutations remain disabled until each action class passes the documented external pilot and receives a separate one-time manager authorization. Historical imports are never presented as fresh captures.
+
+The Operations view reports private-volume usage, the durable provider-call budget and unresolved collector work. A boxes.dev run with no verified final receipt blocks replacement runs until an operator reconciles it. These controls are implemented; the live restore, billing and rollback drills still require operator evidence.
 
 ## Local development
 

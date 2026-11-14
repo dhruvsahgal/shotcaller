@@ -136,6 +136,8 @@ function renderIntelligence() {
     ['Latest complete capture', latest?.observed_at ? ageLine(latest.observed_at) : 'None', latest ? `${latest.observed_at} · ${latest.id}` : 'No complete pointer'],
     ['Master prompt', state.prompt.ready ? 'Ready' : 'Blocked', state.prompt.hash || state.prompt.error],
     ['Decision model', state.model_configured ? 'Configured' : 'Not configured', 'Recommendations remain advice only'],
+    ['Model call budget', `${state.operations?.model_usage?.remaining ?? '—'} remaining`, `${state.operations?.model_usage?.attempted ?? 0}/${state.operations?.model_usage?.limit ?? '—'} reserved or attempted · ${state.operations?.model_usage?.actual?.total_tokens ?? 0} reported tokens`],
+    ['Private volume', `${state.operations?.storage?.files ?? 0} files`, `${state.operations?.storage?.bytes ?? 0} bytes${state.operations?.storage?.quota_used_percent == null ? ' · quota not configured' : ` · ${state.operations.storage.quota_used_percent}% of configured quota`}`],
     ['Action executor', state.actions?.mode || 'shadow', state.actions?.gates_verified ? `Enabled classes: ${state.actions.enabled_classes.join(', ') || 'none'}` : 'External pilot gates are unverified'],
     ['Stop switch', state.actions?.control?.stop_switch ? 'ACTIVE' : 'Released', state.actions?.control?.human_takeover ? 'Human takeover is active' : 'No human takeover recorded'],
     ['Live roster mutations', state.actions?.mode === 'live' && state.actions?.gates_verified ? 'Class bounded' : 'Disabled', 'Each live action still requires a dedicated one-time manager authorization']

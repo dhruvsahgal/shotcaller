@@ -68,11 +68,28 @@ export class CollectorRuns {
   async status() {
     const settings = await this.settings();
     const attempts = (await this.store.list('attempts')).filter(a => a.id.startsWith('collector-'));
-    return { ...settings, trigger_configured: Boolean(this.config.boxesRunUrl && this.config.boxesSecret && this.config.boxesThreadId), gates_verified: Boolean(this.config.collectorGatesVerified), attempts: attempts.slice(0, 20), alerts: attempts.filter(a => !['complete', 'partial'].includes(a.outcome)).slice(0, 10) };
+    const unresolved = await this.unresolvedReceipt();
+    return { ...settings, trigger_configured: Boolean(this.config.boxesRunUrl && this.config.boxesSecret && this.config.boxesThreadId), gates_verified: Boolean(this.config.collectorGatesVerified), unresolved_run: unresolved ? { run_id: unresolved.run.id, status: unresolved.receipt.status, deadline: unresolved.receipt.deadline } : null, attempts: attempts.slice(0, 20), alerts: attempts.filter(a => !['complete', 'partial'].includes(a.outcome)).slice(0, 10) };
+  }
+  async unresolvedReceipt() {
+    const runs = await this.store.list('runs');
+    const attempts = await this.store.list('attempts');
+    const settled = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || ['complete', 'partial', 'failed', 'cancelled', 'needs_login'].includes(attempt.outcome)).map(attempt => attempt.run_id));
+    for (const run of runs) {
+      if (settled.has(run.id)) continue;
+      try {
+        const receipt = JSON.parse(await readFile(join(this.root, `${run.id}.json`), 'utf8'));
+        return { run, receipt };
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    return null;
   }
   async dispatch(run) {
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
     if (!this.config.collectorGatesVerified) throw new Error('Invalid collector trigger: external gates are unverified; use supervised upload');
     if (!this.config.boxesRunUrl || !this.config.boxesSecret || !run.thread_id) throw new Error('Invalid collector trigger configuration');
+    const unresolved = await this.unresolvedReceipt();
+    if (unresolved) throw new Error(`Collector run ${unresolved.run.id} must reconcile before launching a replacement`);
     // Only identifiers and bounded scope go to the model. An isolated broker handles upload capabilities.
     const input = { prompt: `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}. Exact allowed_pages: ${JSON.stringify(run.allowed_pages)}. Do not upload, access credentials, or change Yahoo state.`, target: { kind: 'existing_thread', threadId: run.thread_id } };
     const started = new Date(this.now()).toISOString();
@@ -112,7 +129,7 @@ export class CollectorRuns {
   async expirePending() {
     const runs = await this.store.list('runs');
     const attempts = await this.store.list('attempts');
-    const settledRuns = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || attempt.outcome === 'timed_out').map(attempt => attempt.run_id));
+    const settledRuns = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || ['complete', 'partial', 'failed', 'cancelled', 'needs_login'].includes(attempt.outcome)).map(attempt => attempt.run_id));
     for (const run of runs) {
       if (settledRuns.has(run.id)) continue;
       let pending;
@@ -121,5 +138,13 @@ export class CollectorRuns {
       if (Date.parse(pending.deadline) > this.now()) continue;
       await this.store.saveRunAttempt({ id: `collector-timeout-${run.id.slice(4)}`, run_id: run.id, started_at: pending.accepted_at, finished_at: pending.deadline, outcome: 'timed_out', artifact_ids: [], reason: 'No verified collector output arrived before the deadline. Check login, capacity and model budget.' });
     }
+  }
+  async reconcile(runId, { outcome, reason }) {
+    if (!['failed', 'cancelled'].includes(outcome) || typeof reason !== 'string' || reason.trim().length < 12 || reason.length > 500) throw new Error('Invalid collector reconciliation');
+    const run = await this.store.read(runId, 'runs');
+    const unresolved = await this.unresolvedReceipt();
+    if (!unresolved || unresolved.run.id !== run.id) throw new Error('Collector run does not require reconciliation');
+    const receipt = unresolved.receipt;
+    return this.store.saveRunAttempt({ id: `collector-reconcile-${randomUUID()}`, run_id: run.id, started_at: receipt.accepted_at, finished_at: new Date(this.now()).toISOString(), outcome, artifact_ids: [], reason: reason.trim() });
   }
 }

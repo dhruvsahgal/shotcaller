@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { digest } from './store.mjs';
+import { ModelUsageLedger } from './health.mjs';
 
 export const tasks = ['recommendation', 'opponent_model', 'valuation', 'research_synthesis', 'plan_optimization', 'weekly_review', 'recap_draft', 'followup'];
 export async function promptInfo(path) {
@@ -38,12 +39,23 @@ export async function makeDecision(request, config, store, transport = fetch) {
     ],
     max_completion_tokens: 1800
   };
-  let response;
-  try { response = await transport(endpoint.href, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) }); }
-  catch { throw new Error('Model request failed or timed out; no decision was saved'); }
-  if (!response.ok) throw new Error(`Model request failed (HTTP ${response.status}); no decision was saved`);
-  const data = await response.json();
+  const ledger = new ModelUsageLedger(store.root, config.modelCallBudget || 50);
+  const reservation = await ledger.reserve({ task: request.task, model: config.model });
+  let response, data;
+  try {
+    response = await transport(endpoint.href, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
+    if (!response.ok) throw new Error(`Model request failed (HTTP ${response.status}); no decision was saved`);
+    data = await response.json();
+  } catch (error) {
+    await ledger.settle(reservation.id, { status: 'failed', usage: null });
+    if (/^Model request failed \(HTTP/.test(error.message)) throw error;
+    throw new Error('Model request failed or timed out; no decision was saved');
+  }
   const answer = data.choices?.[0]?.message?.content;
-  if (typeof answer !== 'string' || !answer.trim()) throw new Error('Model returned no decision text');
-  return store.decision({ kind: 'decision', status: 'proposed', task: request.task, question: request.question, created_at: new Date().toISOString(), requested_model: config.model, served_model: data.model || 'unreported', prompt_hash: prompt.hash, prompt_text: prompt.text, snapshot_ids: snapshots.map(s => s.id), input_hash: digest(content), context_version: 1, previous_id: previous?.id || null, answer, usage: data.usage || null });
+  if (typeof answer !== 'string' || !answer.trim()) {
+    await ledger.settle(reservation.id, { status: 'failed', usage: data.usage || null });
+    throw new Error('Model returned no decision text');
+  }
+  await ledger.settle(reservation.id, { status: 'succeeded', usage: data.usage || null });
+  return store.decision({ kind: 'decision', status: 'proposed', task: request.task, question: request.question, created_at: new Date().toISOString(), requested_model: config.model, served_model: data.model || 'unreported', prompt_hash: prompt.hash, prompt_text: prompt.text, snapshot_ids: snapshots.map(s => s.id), input_hash: digest(content), context_version: 1, previous_id: previous?.id || null, answer, usage_reservation_id: reservation.id, usage: data.usage || null });
 }

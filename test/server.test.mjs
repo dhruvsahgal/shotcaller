@@ -65,6 +65,16 @@ test('API protects private evidence and handles a failed refresh without fake su
     assert.equal((await fetch(`${base}/api/actions/${actionIntent.id}/authorize`,{method:'POST',headers:{Authorization:`Bearer ${config.approvalToken}`,'Content-Type':'application/json'},body:authorizationBody})).status,201);
     assert.equal((await fetch(`${base}/api/executor/actions/${actionIntent.id}`,{headers:{Authorization:`Bearer ${config.collectorToken}`}})).status,401);
     assert.equal((await fetch(`${base}/api/executor/actions/${actionIntent.id}`,{headers:{Authorization:`Bearer ${config.executorToken}`}})).status,200);
+    const operations = await (await fetch(`${base}/api/operations`, { headers })).json();
+    assert.equal(operations.collector_credential.configured, true);
+    assert.equal(operations.model_usage.limit, config.modelCallBudget);
+    const brokerProbe = body => fetch(`${base}/api/collector/capabilities`, { method: 'POST', headers: { Authorization: `Bearer ${body}`, 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal((await brokerProbe(config.collectorToken)).status, 400);
+    const replacementCollectorToken = 'replacement-collector-token-at-least-24-characters';
+    assert.equal((await fetch(`${base}/api/operations/collector-token`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: replacementCollectorToken }) })).status, 200);
+    assert.equal((await brokerProbe(config.collectorToken)).status, 401);
+    assert.equal((await brokerProbe(replacementCollectorToken)).status, 400);
+    assert.equal((await fetch(`${base}/api/state`, { headers })).status, 200);
     assert.equal((await fetch(`${base}/api/forecasts/forecast-missing`,{headers})).status,404);
     const importPayload=payload=>fetch(`${base}/api/import`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const foreignResponse = await importPayload({snapshot_id:'foreign',league_id:'999',source:{type:'test'},kind:'collected_documents',documents:[]});

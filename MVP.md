@@ -40,7 +40,7 @@ Open **Setup** to save your model name, API key and HTTPS chat-completions endpo
 
 Every decision task—including follow-up, opponent modeling, valuation and research synthesis—passes through `app/decisions.mjs`. The adapter reloads `prompts/shotcaller-system.md` on every request, sends its exact bytes as the first system message, and fails before the provider call if it is missing or empty. Source pages and prior answers enter as untrusted JSON data. Models receive no Yahoo mutation tools. A separate bounded executor API can persist signed action intents and shadow preflights; it is isolated from the decision provider and collector.
 
-Each proposed decision saves the task, question, requested/served model, prompt hash, evidence IDs, input hash, prior decision ID, timestamp, usage and answer as JSON, with a Markdown brief alongside it. It is never recorded as an executed transaction. Credentials are excluded.
+Each proposed decision saves the task, question, requested/served model, prompt hash, evidence IDs, input hash, prior decision ID, timestamp, usage reservation, reported usage and answer as JSON, with a Markdown brief alongside it. It is never recorded as an executed transaction. Credentials are excluded. `MODEL_CALL_BUDGET` bounds attempted calls, including provider failures that may still incur cost; reservations survive restart and the adapter never retries a failed provider call automatically.
 
 ## API and agent access
 
@@ -110,3 +110,9 @@ This does not establish a connected autonomous broker, proven Yahoo mutation gua
 Action execution starts in shadow mode with the stop switch active. `APPROVAL_TOKEN`, `EXECUTOR_TOKEN` and `ACTION_SIGNING_KEY` must be distinct private Railway secrets. The collector never receives them. Each proposed lineup, IL, add/drop or trade-response action binds exact IDs, scoring date, expiry, preconditions and a single-use nonce. A separate arm call rechecks stop/takeover and consumes the nonce immediately before any live interaction. Ambiguous or partial outcomes require reconciliation and cannot be blindly retried.
 
 Keep `ACTION_MODE=shadow`, `ACTION_GATES_VERIFIED=false` and `ACTION_ENABLED_CLASSES` empty until the per-class boxes.dev shadow and failure matrix in [the operations guide](docs/operations/boxes-collector.md#separate-bounded-executor) has recorded evidence. No action class is live in this repository or by virtue of a passing local test.
+
+### Recovery and cost controls
+
+`GET /api/operations` reports archive size, optional quota percentage, model reservations and unresolved collector work. `POST /api/operations/backup-manifest` creates a private hash manifest for an isolated restore drill. `POST /api/operations/collector-token` rotates the collector broker credential without changing `APP_TOKEN`; only the digest is persisted. A timed-out collector remains reconciliation-required and blocks replacement dispatch until `POST /api/collector/reconcile` records the verified outcome.
+
+These endpoints do not copy or encrypt the volume. Follow [the operating runbook](docs/operations/runbook.md), keep backup contents private, and record an actual Railway restore plus rollback drill before calling the system production-ready.
