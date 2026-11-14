@@ -3,6 +3,7 @@ import { canonicalDigest } from './store.mjs';
 import { strictInstant } from './time.mjs';
 
 export const optimizationAlgorithmVersion = 'finite-option-tree-v1';
+export const maxOptimizationClockSkewMs = 5 * 60_000;
 const availabilityStates = new Set(['available', 'waivers', 'claimed', 'unknown']);
 const defaultWeights = Object.freeze({ category: 10, usable_start: 0.25, replacement: 1, next_matchup: 1, claim_risk: 1 });
 
@@ -36,11 +37,11 @@ function validateInput(input) {
   return input;
 }
 
-function preflightOpportunity(opportunity, input, initialRoster) {
+function preflightOpportunity(opportunity, input, initialRoster, receivedAt) {
   if (!['available', 'waivers'].includes(opportunity.availability.state)) return 'Refresh availability: candidate is no longer confirmed available.';
-  const ageHours = (Date.parse(input.created_at) - Date.parse(opportunity.availability.observed_at)) / 3600000;
+  const ageHours = (Date.parse(receivedAt) - Date.parse(opportunity.availability.observed_at)) / 3600000;
   if (ageHours < 0 || ageHours > input.max_availability_age_hours) return `Availability evidence is stale (${Math.max(0, ageHours).toFixed(1)} hours old).`;
-  if (Date.parse(opportunity.decision_deadline) < Date.parse(input.created_at)) return 'The decision deadline has passed.';
+  if (Date.parse(opportunity.decision_deadline) < Date.parse(receivedAt)) return 'The decision deadline has passed.';
   if (initialRoster.has(opportunity.candidate.id)) return 'Candidate is already rostered.';
   if (opportunity.drop_player_id != null && !initialRoster.has(opportunity.drop_player_id)) return 'Drop player is not on the current roster.';
   const afterDrop = initialRoster.size - (opportunity.drop_player_id ? 1 : 0);
@@ -107,13 +108,16 @@ function enumerate(opportunities, remaining) {
   return sequences;
 }
 
-export function optimizePlans(rawInput) {
+export function optimizePlans(rawInput, { receivedAt = new Date().toISOString() } = {}) {
+  if (!strictInstant(receivedAt)) throw new Error('Invalid optimization receipt time');
   const input = validateInput(structuredClone(rawInput));
+  receivedAt = new Date(receivedAt).toISOString();
+  if (Math.abs(Date.parse(receivedAt) - Date.parse(input.created_at)) > maxOptimizationClockSkewMs) throw new Error('Optimization request created_at is materially skewed from the server receipt time');
   const initialTeam = input.forecast_input.teams.find(team => team.id === input.manager_team_id);
   const initialRoster = new Map(initialTeam.players.map(player => [player.id, player]));
   const rejected = [], feasible = [];
   for (const opportunity of input.opportunities) {
-    const reason = preflightOpportunity(opportunity, input, initialRoster);
+    const reason = preflightOpportunity(opportunity, input, initialRoster, receivedAt);
     if (reason) rejected.push({ opportunity_id: opportunity.id, reason });
     else feasible.push(opportunity);
   }
@@ -160,7 +164,8 @@ export function optimizePlans(rawInput) {
     schema_version: 1,
     kind: 'optimization_result',
     algorithm_version: optimizationAlgorithmVersion,
-    created_at: input.created_at,
+    created_at: receivedAt,
+    submitted_created_at: input.created_at,
     input_hash: canonicalDigest(input),
     source_snapshot_ids: [...input.forecast_input.source_snapshot_ids],
     weights,
@@ -172,4 +177,3 @@ export function optimizePlans(rawInput) {
     execution_status: 'advice_only'
   };
 }
-

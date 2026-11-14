@@ -157,7 +157,7 @@ async function loadOperations() {
 }
 $('login-form').addEventListener('submit', e => { e.preventDefault(); attempt(async () => { token = $('token').value.trim(); await load(); await Promise.all([loadSetup(), loadOperations()]); $('token').value = ''; $('login').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; }); });
 $('logout').addEventListener('click', () => { token = ''; location.reload(); });
-document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => { showTab(button.dataset.tab); if (button.dataset.tab === 'operations') void attempt(loadOperations); }));
+document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => { showTab(button.dataset.tab); if (button.dataset.tab === 'setup') void attempt(loadOperations); }));
 $('refresh').addEventListener('click', () => attempt(async () => { await api('refresh', {}); await load(); }));
 async function loadSetup() {
   const settings = await api('setup');
@@ -190,7 +190,7 @@ $('collector-run').addEventListener('click', () => attempt(async () => {
   try {
     const result = await api('collector/run', { intended_for: pendingCollectorTime, dispatch: collector.gates_verified && collector.trigger_configured });
     if (['awaiting_artifacts', 'supervised_upload'].includes(result.launch.status)) pendingCollectorTime = null;
-    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : result.launch.outcome === 'failed' ? 'Launch failed; retry will preserve this logical run.' : 'Launch acceptance is not evidence of completed capture.'}`;
+    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : result.launch.status === 'reconciliation_required' ? 'The dispatch result is ambiguous; reconcile it before retrying so the collector cannot launch twice.' : result.launch.outcome === 'failed' ? 'Launch failed; retry will preserve this logical run.' : 'Launch acceptance is not evidence of completed capture.'}`;
   } finally { await loadCollector(); }
 }));
 $('collector-pause').addEventListener('click', () => attempt(async () => { await api('collector/settings', { paused: !collector.paused }); await loadCollector(); }));

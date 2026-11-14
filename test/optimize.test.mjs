@@ -29,13 +29,14 @@ const input = () => ({
   forecast_input: forecastInput(), acquisitions_remaining: 2, max_roster_size: 1, min_plan_value: 0.01,
   max_availability_age_hours: 12, opportunities: []
 });
+const optimize = value => optimizePlans(value, { receivedAt: value.created_at });
 
 test('a raw scheduled game gets no start credit when it cannot enter the lineup', () => {
   const value = input();
   value.forecast_input.teams[0].players.push(player('locked-star', 40));
   value.max_roster_size = 2;
   value.opportunities = [opportunity('crowded', player('candidate', 8), { drop_player_id: 'roster' })];
-  const plan = optimizePlans(value).plans.find(row => row.opportunity_ids.includes('crowded'));
+  const plan = optimize(value).plans.find(row => row.opportunity_ids.includes('crowded'));
   assert.equal(plan.comparison.usable_starts_delta, 0);
   assert.equal(plan.comparison.raw_scheduled_games_credited, 0);
 });
@@ -48,7 +49,7 @@ test('waiting can retain todays start and add tomorrows eligible start', () => {
     opportunity('now', candidate, { group_id: 'candidate-choice', effective_at: '2026-11-14T01:00:00Z' }),
     opportunity('wait', candidate, { group_id: 'candidate-choice', mode: 'wait', effective_at: '2026-11-14T12:00:00Z' })
   ];
-  const result = optimizePlans(value);
+  const result = optimize(value);
   const now = result.plans.find(row => row.opportunity_ids[0] === 'now');
   const wait = result.plans.find(row => row.opportunity_ids[0] === 'wait');
   assert.equal(wait.comparison.usable_starts_delta, now.comparison.usable_starts_delta + 1);
@@ -61,7 +62,7 @@ test('illegal IL activation and stale or claimed candidates are excluded with re
     opportunity('claimed', player('claimed-player', 20), { availability: { state: 'claimed', observed_at: '2026-11-14T00:00:00Z', source_ids: ['capture-1'] } }),
     opportunity('stale', player('stale-player', 20), { availability: { state: 'available', observed_at: '2026-11-12T00:00:00Z', source_ids: ['capture-1'] } })
   ];
-  const result = optimizePlans(value);
+  const result = optimize(value);
   assert.deepEqual(result.plans.map(row => row.kind), ['hold']);
   assert.match(result.rejected.find(row => row.opportunity_id === 'activate').reason, /roster slot/i);
   assert.match(result.rejected.find(row => row.opportunity_id === 'claimed').reason, /refresh availability/i);
@@ -77,7 +78,7 @@ test('the complete acquisition path can beat an early single add and preserve a 
     opportunity('small-now', player('small', 11), { replacement_value: 0.2 }),
     opportunity('late-swing', player('swing', 30, [game('2026-11-16T03:00:00Z')]), { drop_player_id: 'second-drop', effective_at: '2026-11-15T00:00:00Z', decision_deadline: '2026-11-14T18:00:00Z', replacement_value: 3 })
   ];
-  const result = optimizePlans(value);
+  const result = optimize(value);
   assert.deepEqual(result.recommendation.opportunity_ids, ['small-now', 'late-swing']);
   assert.equal(result.recommendation.acquisitions_used, 2);
   assert.equal(result.recommendation.acquisitions_reserved, 0);
@@ -88,9 +89,22 @@ test('hold remains explicit when no candidate clears the configured threshold', 
   const value = input();
   value.min_plan_value = 50;
   value.opportunities = [opportunity('marginal', player('marginal', 11))];
-  const result = optimizePlans(value);
+  const result = optimize(value);
   assert.equal(result.recommendation.kind, 'hold');
   assert.equal(result.recommendation.acquisitions_reserved, 2);
   assert.match(result.next_reconsideration.reason, /deadline|availability|evidence/i);
 });
 
+test('server receipt time rejects replayed inputs and controls freshness deadlines', () => {
+  const replay = input();
+  assert.throws(() => optimizePlans(replay, { receivedAt: '2026-11-14T00:06:00Z' }), /materially skewed/i);
+
+  const value = input();
+  value.created_at = '2026-11-14T00:00:00Z';
+  value.opportunities = [opportunity('deadline-race', player('candidate', 20), { decision_deadline: '2026-11-14T00:02:00Z' })];
+  const result = optimizePlans(value, { receivedAt: '2026-11-14T00:04:00Z' });
+  assert.equal(result.created_at, '2026-11-14T00:04:00.000Z');
+  assert.equal(result.submitted_created_at, value.created_at);
+  assert.deepEqual(result.plans.map(plan => plan.kind), ['hold']);
+  assert.match(result.rejected[0].reason, /deadline has passed/i);
+});

@@ -41,7 +41,9 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.locator('[data-tab=matchup]').click();
     assert.match(await page.locator('#matchup-intelligence').innerText(), /ui-shared-source/);
     assert.match(await page.locator('#matchup-intelligence').innerText(), /1 independent finalized week/);
+    const operationsRefresh = page.waitForRequest(request => new URL(request.url()).pathname === '/api/operations');
     await page.locator('[data-tab=setup]').click();
+    await operationsRefresh;
     assert.match(await page.locator('#operations-intelligence').innerText(), /Live roster mutations\s+Disabled/);
     await page.locator('[data-tab=overview]').click();
     const lineupRows=await page.locator('#overview-lineups tbody tr').allTextContents();

@@ -7,6 +7,12 @@ import { validateCollectorRequest } from '../scripts/validate-collector-output.m
 
 const interval = 12 * 60 * 60_000;
 const firstSlot = Date.parse('2000-01-01T06:00:00+08:00');
+const settledOutcomes = new Set(['complete', 'partial', 'failed', 'cancelled', 'needs_login']);
+function receiptSettled(receipt, attempts, runId) {
+  if (!receipt.attempt_id) return attempts.some(attempt => attempt.run_id === runId && settledOutcomes.has(attempt.outcome) && Date.parse(attempt.finished_at) >= Date.parse(receipt.accepted_at));
+  const bound = new Set([receipt.attempt_id, receipt.reconciliation_attempt_id].filter(Boolean));
+  return attempts.some(attempt => attempt.run_id === runId && bound.has(attempt.id) && settledOutcomes.has(attempt.outcome));
+}
 export function collectionSlot(now = Date.now()) {
   return new Date(firstSlot + Math.floor((now - firstSlot) / interval) * interval).toISOString();
 }
@@ -73,11 +79,10 @@ export class CollectorRuns {
   }
   async unresolvedReceipt(attempts = null, runs = null) {
     [attempts, runs] = await Promise.all([attempts || this.store.list('attempts'), runs || this.store.list('runs')]);
-    const settled = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || ['complete', 'partial', 'failed', 'cancelled', 'needs_login'].includes(attempt.outcome)).map(attempt => attempt.run_id));
     for (const run of runs) {
-      if (settled.has(run.id)) continue;
       try {
         const receipt = JSON.parse(await readFile(join(this.root, `${run.id}.json`), 'utf8'));
+        if (receiptSettled(receipt, attempts, run.id)) continue;
         return { run, receipt };
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
@@ -89,20 +94,47 @@ export class CollectorRuns {
     if (!this.config.boxesRunUrl || !this.config.boxesSecret || !run.thread_id) throw new Error('Invalid collector trigger configuration');
     const unresolved = await this.unresolvedReceipt();
     if (unresolved) throw new Error(`Collector run ${unresolved.run.id} must reconcile before launching a replacement`);
-    // Only identifiers and bounded scope go to the model. An isolated broker handles upload capabilities.
-    const input = { prompt: `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}. Exact allowed_pages: ${JSON.stringify(run.allowed_pages)}. Do not upload, access credentials, or change Yahoo state.`, target: { kind: 'existing_thread', threadId: run.thread_id } };
     const started = new Date(this.now()).toISOString();
     const attemptId = `collector-${randomUUID()}`;
+    const receiptPath = join(this.root, `${run.id}.json`);
+    const dispatching = {
+      version: 2,
+      run_id: run.id,
+      generation: attemptId,
+      attempt_id: attemptId,
+      dispatch_started_at: started,
+      accepted_at: null,
+      deadline: new Date(this.now() + 15 * 60_000).toISOString(),
+      status: 'dispatching'
+    };
+    // This durable marker precedes the external request. A crash or transport error
+    // therefore blocks a second launch until an operator reconciles this generation.
+    await atomicJSON(receiptPath, dispatching);
+    // Only identifiers and bounded scope go to the model. An isolated broker handles upload capabilities.
+    const input = { prompt: `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, attempt ${attemptId}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}. Exact allowed_pages: ${JSON.stringify(run.allowed_pages)}. Do not upload, access credentials, or change Yahoo state.`, target: { kind: 'existing_thread', threadId: run.thread_id } };
+    let response;
     try {
-      const response = await this.fetcher(this.config.boxesRunUrl, { method: 'POST', headers: { Authorization: `Bearer ${this.config.boxesSecret}`, 'Content-Type': 'application/json', 'Idempotency-Key': run.idempotency_key }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000), redirect: 'error' });
-      if (response.status !== 202) throw new Error('Trigger refused');
+      response = await this.fetcher(this.config.boxesRunUrl, { method: 'POST', headers: { Authorization: `Bearer ${this.config.boxesSecret}`, 'Content-Type': 'application/json', 'Idempotency-Key': run.idempotency_key }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000), redirect: 'error' });
+    } catch {
+      const ambiguous = { ...dispatching, status: 'reconciliation_required' };
+      await atomicJSON(receiptPath, ambiguous);
+      return ambiguous;
+    }
+    if (response.status !== 202) {
+      const failed = await this.store.saveRunAttempt({ id: attemptId, run_id: run.id, started_at: started, finished_at: new Date(this.now()).toISOString(), outcome: 'failed', artifact_ids: [], reason: 'Automation trigger was refused before acceptance; retry may reuse this logical run.' });
+      await atomicJSON(receiptPath, { ...dispatching, status: 'rejected' });
+      return failed;
+    }
+    try {
       const result = await response.json();
       if (!['starting', 'thread_ready'].includes(result.status)) throw new Error('Trigger failed');
-      const receipt = { run_id: run.id, accepted_at: started, deadline: new Date(this.now() + 15 * 60_000).toISOString(), status: 'awaiting_artifacts' };
-      await atomicJSON(join(this.root, `${run.id}.json`), receipt);
+      const receipt = { ...dispatching, accepted_at: new Date(this.now()).toISOString(), status: 'awaiting_artifacts' };
+      await atomicJSON(receiptPath, receipt);
       return receipt;
     } catch {
-      return this.store.saveRunAttempt({ id: attemptId, run_id: run.id, started_at: started, finished_at: new Date(this.now()).toISOString(), outcome: 'failed', artifact_ids: [], reason: 'Automation trigger failed or budget/capacity unavailable; retry the same logical run after checking boxes.dev.' });
+      const ambiguous = { ...dispatching, status: 'reconciliation_required' };
+      await atomicJSON(receiptPath, ambiguous);
+      return ambiguous;
     }
   }
   async runNow(input = {}) {
@@ -128,14 +160,14 @@ export class CollectorRuns {
   async expirePending() {
     const runs = await this.store.list('runs');
     const attempts = await this.store.list('attempts');
-    const settledRuns = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || ['complete', 'partial', 'failed', 'cancelled', 'needs_login'].includes(attempt.outcome)).map(attempt => attempt.run_id));
     for (const run of runs) {
-      if (settledRuns.has(run.id)) continue;
       let pending;
       try { pending = JSON.parse(await readFile(join(this.root, `${run.id}.json`), 'utf8')); }
       catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      if (receiptSettled(pending, attempts, run.id) || pending.status !== 'awaiting_artifacts') continue;
       if (Date.parse(pending.deadline) > this.now()) continue;
-      await this.store.saveRunAttempt({ id: `collector-timeout-${run.id.slice(4)}`, run_id: run.id, started_at: pending.accepted_at, finished_at: pending.deadline, outcome: 'timed_out', artifact_ids: [], reason: 'No verified collector output arrived before the deadline. Check login, capacity and model budget.' });
+      await this.store.saveRunAttempt({ id: pending.attempt_id || `collector-timeout-${run.id.slice(4)}`, run_id: run.id, started_at: pending.accepted_at, finished_at: pending.deadline, outcome: 'timed_out', artifact_ids: [], reason: 'No verified collector output arrived before the deadline. Check login, capacity and model budget.' });
+      await atomicJSON(join(this.root, `${run.id}.json`), { ...pending, status: 'reconciliation_required' });
     }
   }
   async reconcile(runId, { outcome, reason }) {
@@ -144,6 +176,8 @@ export class CollectorRuns {
     const unresolved = await this.unresolvedReceipt();
     if (!unresolved || unresolved.run.id !== run.id) throw new Error('Collector run does not require reconciliation');
     const receipt = unresolved.receipt;
-    return this.store.saveRunAttempt({ id: `collector-reconcile-${randomUUID()}`, run_id: run.id, started_at: receipt.accepted_at, finished_at: new Date(this.now()).toISOString(), outcome, artifact_ids: [], reason: reason.trim() });
+    const attemptId = receipt.reconciliation_attempt_id || `collector-reconcile-${randomUUID()}`;
+    await atomicJSON(join(this.root, `${run.id}.json`), { ...receipt, reconciliation_attempt_id: attemptId, status: 'reconciling' });
+    return this.store.saveRunAttempt({ id: attemptId, run_id: run.id, started_at: receipt.dispatch_started_at || receipt.accepted_at, finished_at: new Date(this.now()).toISOString(), outcome, artifact_ids: [], reason: reason.trim() });
   }
 }
