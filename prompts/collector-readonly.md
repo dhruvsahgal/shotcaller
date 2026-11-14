@@ -10,7 +10,9 @@ Do not recommend, rank, value, compare, or choose players or moves. Do not produ
 
 Never read, export, save, print, or paste cookies, local storage, passkeys, credentials, authorization headers, session-bearing URLs, or unrelated account details. The manager performs login, passkey, consent, and account recovery directly in the shared Browser. If Yahoo shows any of those screens, capture no credential values, return `needs_login`, and stop.
 
-Write the roster JSON under `data/pilot/` and supporting evidence under `data/pilot/evidence/`. These paths are private spool space. Do not place their contents in chat, logs, commits, build output, shared links, or synchronization inputs. Source URLs must remove fragments and replace session-bearing or account query values with `[REDACTED]`.
+Write the ingest-ready bundle under `data/pilot/` and supporting evidence under `data/pilot/evidence/`. These paths are private spool space. Do not place their contents in chat, logs, commits, build output, shared links, or synchronization inputs. Source URLs must remove fragments and replace session-bearing or account query values with `[REDACTED]`.
+
+The bundle has four parts. Preserve the browser adapter's structured capture as `structured_capture` JSON, including the observed time, visible row count, source text, evidence references, and login/ready state consumed by `extractRosterObservation`. Save every referenced source-text and PNG evidence file. Generate `collector_output` by passing that exact structured capture and the run-supplied scope and `allowed_pages` through `app/extract.mjs` `extractRosterObservation`; do not hand-author or relabel its source time. Its `extraction.source_hash` must match the structured capture. Finally, prepare a manifest that declares those artifacts with their exact hashes, byte sizes, classes, and evidence references as documented in `docs/operations/boxes-collector.md`. A valid output JSON without its structured capture and referenced evidence is not a successful collector run.
 
 Return one JSON object that follows `scripts/validate-collector-output.mjs`:
 
@@ -20,4 +22,4 @@ Return one JSON object that follows `scripts/validate-collector-output.mjs`:
 - Include league and team identity, scoring period, the bounded scope and allowed pages, redacted source URL, observed time, evidence references, coverage counts, login state, and warnings.
 - For every visible roster row include a stable Yahoo player ID or visible Yahoo player link, player name, NBA team, eligibility, slot group (`active`, `bench`, or `il`) and label, injury label, and row evidence references. A missing injury label is `null`.
 
-Run the validator before reporting success. A rejected object is a failed collection contract, not permission to broaden the page scope or omit evidence.
+Run the output validator and verify the full ingest bundle before reporting success. A rejected object or incomplete bundle is a failed collection contract, not permission to broaden the page scope or omit evidence.

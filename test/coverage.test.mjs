@@ -30,6 +30,10 @@ test('full league plan requires ten rosters, five pairings, all periods, seven d
   assert.deepEqual(oneMatchup.datasets.find(d => d.dataset === 'matchups'), { dataset: 'matchups', status: 'partial', expected_segments: 5, complete_segments: 1 });
   assert.equal(oneMatchup.datasets.find(d => d.dataset === 'team_roster').status, 'unknown');
   assert.equal(assessCoverage(plan, plan.segments.map(s => fragment(s))).status, 'complete');
+  const mixed = plan.segments.map((s, index) => fragment(s, { collection_id: index ? 'run-2' : 'run-1' }));
+  assert.equal(assessCoverage(plan, mixed).status, 'partial');
+  assert.deepEqual(assessCoverage(plan, mixed).collection_ids, ['run-1', 'run-2']);
+  assert.equal(assessCoverage(plan, mixed).datasets.every(dataset => dataset.complete_segments === 0), true);
 });
 
 test('missing terminal, repeating pages, repeated rows and incomplete chains cannot advance completeness', () => {

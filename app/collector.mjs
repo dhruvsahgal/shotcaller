@@ -28,6 +28,20 @@ function captureSignature(capture) {
   return canonicalDigest(stable);
 }
 
+class ObservationTimeout extends Error {}
+async function observeWithin(observe, input, startedAt, maxElapsed, now) {
+  const remaining = maxElapsed - (now() - startedAt);
+  if (remaining <= 0) throw new ObservationTimeout('Collector time limit reached');
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => observe({ ...input, signal: controller.signal })),
+      new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new ObservationTimeout('Collector time limit reached')); }, remaining); })
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 export async function collectBoundedRoster({ request, observe, limits: limitInput, now = () => Date.now() }) {
   if (typeof observe !== 'function') throw new Error('Collector requires an observation function');
   const limits = limitsOf(limitInput);
@@ -35,14 +49,22 @@ export async function collectBoundedRoster({ request, observe, limits: limitInpu
   const signatures = new Map();
   const inventory = [];
   let lastExtracted = null;
+  let tokens = 0;
 
   for (let step = 1; step <= limits.max_steps; step += 1) {
-    const capture = await observe({ step, url: request.allowed_pages[0] });
+    let capture;
+    try { capture = await observeWithin(observe, { step, url: request.allowed_pages[0] }, startedAt, limits.max_elapsed_ms, now); }
+    catch (error) {
+      if (!(error instanceof ObservationTimeout)) throw error;
+      if (!lastExtracted) throw new Error('Collector observation timed out before source evidence was captured');
+      return forcePartialReceipt(lastExtracted, 'Collector time limit reached; coverage is incomplete.', inventory);
+    }
     const extracted = extractRosterObservation(capture, request);
     lastExtracted = extracted;
     inventory.push(extracted.extraction.page_inventory[0]);
+    tokens += estimatedTokens(capture);
     if (extracted.status === 'needs_login') return { ...extracted, extraction: { ...extracted.extraction, page_inventory: inventory } };
-    if (estimatedTokens(capture) > limits.max_source_tokens) return forcePartialReceipt(extracted, 'Collector source token limit reached; coverage is incomplete.', inventory);
+    if (tokens > limits.max_source_tokens) return forcePartialReceipt(extracted, 'Collector source token limit reached; coverage is incomplete.', inventory);
     if (now() - startedAt > limits.max_elapsed_ms) return forcePartialReceipt(extracted, 'Collector time limit reached; coverage is incomplete.', inventory);
     if (capture.ready !== false) return { ...extracted, extraction: { ...extracted.extraction, page_inventory: inventory } };
 
@@ -64,7 +86,12 @@ export async function collectDatasetSegment({ segment, observe, fragments = [], 
   if (assessment.status === 'complete' || assessment.resume_page_key === null) return { ...assessment, fragments: captured };
   let tokens = 0;
   for (let step = 0; step < limits.max_steps; step += 1) {
-    const fragment = await observe({ segment: structuredClone(segment), page_key: assessment.resume_page_key });
+    let fragment;
+    try { fragment = await observeWithin(observe, { segment: structuredClone(segment), page_key: assessment.resume_page_key }, started, limits.max_elapsed_ms, now); }
+    catch (error) {
+      if (!(error instanceof ObservationTimeout)) throw error;
+      return { ...assessment, status: 'partial', issues: [...assessment.issues, 'Dataset collection time limit reached'], fragments: captured };
+    }
     captured.push(fragment); tokens += estimatedTokens(fragment);
     assessment = assessSegment(segment, captured);
     if (tokens > limits.max_source_tokens || now() - started > limits.max_elapsed_ms) {

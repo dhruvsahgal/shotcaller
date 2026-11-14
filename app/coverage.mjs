@@ -103,13 +103,18 @@ export function assessSegment(segment, fragments = []) {
 }
 
 export function assessCoverage(plan, fragments = []) {
-  const segments = plan.segments.map(segment => ({ dataset: segment.scope.dataset, scope: segment.scope, filters: segment.filters, ...assessSegment(segment, fragments.filter(fragment => fragment.segment_id === segment.id)) }));
+  const collection_ids = [...new Set(fragments.map(fragment => fragment?.collection_id).filter(Boolean))];
+  const mixedCollections = collection_ids.length > 1;
+  const segments = plan.segments.map(segment => {
+    const assessment = assessSegment(segment, fragments.filter(fragment => fragment.segment_id === segment.id));
+    return { dataset: segment.scope.dataset, scope: segment.scope, filters: segment.filters, ...assessment, ...(mixedCollections && assessment.status !== 'unknown' ? { status: 'partial', issues: [...new Set([...assessment.issues, 'Coverage collection run mismatch'])], resume_page_key: null } : {}) };
+  });
   const datasets = coverageDatasets.map(dataset => {
     const members = segments.filter(segment => segment.dataset === dataset);
     return { dataset, status: members.length && members.every(s => s.status === 'complete') ? 'complete' : members.every(s => s.status === 'unknown') ? 'unknown' : 'partial', expected_segments: members.length, complete_segments: members.filter(s => s.status === 'complete').length };
   });
   const unexpected_fragments = fragments.filter(fragment => !plan.segments.some(segment => segment.id === fragment.segment_id)).map(fragment => fragment.id);
-  return { status: !unexpected_fragments.length && datasets.every(d => d.status === 'complete') ? 'complete' : fragments.length ? 'partial' : 'unknown', datasets, segments, unexpected_fragments };
+  return { status: !mixedCollections && !unexpected_fragments.length && datasets.every(d => d.status === 'complete') ? 'complete' : fragments.length ? 'partial' : 'unknown', collection_ids, datasets, segments, unexpected_fragments };
 }
 
 export function pendingSegments(plan, fragments = []) {

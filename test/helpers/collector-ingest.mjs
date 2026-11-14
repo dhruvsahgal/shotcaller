@@ -21,7 +21,7 @@ export async function harness() {
 }
 export async function bundle(run, attempt = 'collector-attempt-one', pageName = 'full') {
   const capture = JSON.parse(await readFile(new URL(`../fixtures/collector/page-${pageName}.json`, import.meta.url), 'utf8'));
-  const output = extractRosterObservation(capture, { league: { id: '999', name: 'Synthetic League' }, team: { id: '7', name: 'Synthetic Team' }, scoring_period: scope.scoring_period, allowed_pages: ['https://basketball.fantasysports.yahoo.com/nba/999/7'] });
+  const output = extractRosterObservation(capture, { league: { id: '999', name: 'Synthetic League' }, team: { id: '7', name: 'Synthetic Team' }, scoring_period: scope.scoring_period, allowed_pages: run.allowed_pages });
   const refs = [...new Set(capture.evidence_refs.map(r => r.split('#')[0]))];
   const files = [
     { id: 'output', class: 'collector_output', evidence_ref: 'evidence/output.json', bytes: Buffer.from(JSON.stringify(output)) },

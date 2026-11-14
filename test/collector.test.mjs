@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { collectBoundedRoster } from '../app/collector.mjs';
+import { collectBoundedRoster, collectDatasetSegment } from '../app/collector.mjs';
 import { validateCollectorOutput } from '../scripts/validate-collector-output.mjs';
 
 const fixture = async name => JSON.parse(await readFile(new URL(`./fixtures/collector/page-${name}.json`, import.meta.url), 'utf8'));
@@ -76,4 +76,25 @@ test('step, time and source-token limits are enforced outside observation judgme
   });
   assert.equal(tokenLimited.status, 'partial');
   assert.match(tokenLimited.warnings.join(' '), /source token limit/i);
+});
+
+test('observation deadlines interrupt stalled adapters and cumulative captures share one token budget', async () => {
+  await assert.rejects(collectBoundedRoster({ request, observe: async () => new Promise(() => {}), limits: { max_elapsed_ms: 10 } }), /timed out/);
+
+  const loading = await fixture('full'); loading.ready = false;
+  let calls = 0;
+  const perCapture = Math.ceil(JSON.stringify(loading).length / 4);
+  const bounded = await collectBoundedRoster({
+    request,
+    observe: async () => { calls += 1; return { ...structuredClone(loading), observed_at: `2026-11-14T10:17:0${calls}Z` }; },
+    limits: { max_steps: 5, max_elapsed_ms: 1_000, max_source_tokens: Math.floor(perCapture * 1.5), max_repeated_captures: 5 }
+  });
+  assert.equal(calls, 2);
+  assert.equal(bounded.status, 'partial');
+  assert.match(bounded.warnings.join(' '), /source token limit/i);
+
+  const segment = { id: 'segment-test', scope: { dataset: 'market', league_id: '999', season: '2026', team_id: null, matchup_id: null, scoring_period: request.scoring_period, value_basis: { value: 'actual', aggregation: 'snapshot' } }, filters: { availability: 'FA' }, expected_team_ids: null };
+  const dataset = await collectDatasetSegment({ segment, observe: async () => new Promise(() => {}), limits: { max_elapsed_ms: 10 } });
+  assert.equal(dataset.status, 'partial');
+  assert.match(dataset.issues.join(' '), /time limit/i);
 });

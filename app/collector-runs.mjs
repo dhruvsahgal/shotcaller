@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { atomicJSON, canonicalDigest } from './store.mjs';
 import { validateEvidenceScope, validateIdentifier, validateTimestamp } from './schema.mjs';
+import { validateCollectorRequest } from '../scripts/validate-collector-output.mjs';
 
 const interval = 12 * 60 * 60_000;
 const firstSlot = Date.parse('2000-01-01T06:00:00+08:00');
@@ -10,6 +11,11 @@ export function collectionSlot(now = Date.now()) {
   return new Date(firstSlot + Math.floor((now - firstSlot) / interval) * interval).toISOString();
 }
 export function nextCollectionSlot(now = Date.now()) { return new Date(Date.parse(collectionSlot(now)) + interval).toISOString(); }
+export function rosterAllowedPages(scope) {
+  const page = `https://basketball.fantasysports.yahoo.com/nba/${scope.league_id}/${scope.team_id}`;
+  if (!validateCollectorRequest({ method: 'GET', url: page, allowedPages: [page] }).allowed) throw new Error('Invalid collector roster page');
+  return [page];
+}
 
 export class CollectorRuns {
   constructor(config, store, { now = () => Date.now(), fetcher = fetch } = {}) {
@@ -51,11 +57,12 @@ export class CollectorRuns {
   async create({ scope, intended_for = new Date(this.now()).toISOString() }) {
     this.validateScope(scope); validateTimestamp(intended_for, 'collection slot');
     intended_for = new Date(intended_for).toISOString();
-    const key = canonicalDigest({ scope, intended_for });
+    const allowed_pages = rosterAllowedPages(scope);
+    const key = canonicalDigest({ scope, allowed_pages, intended_for });
     const id = `run-${key.slice(0, 32)}`;
     try { return await this.store.read(id, 'runs'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const input = { id, job_id: 'bounded-roster', idempotency_key: key, scope, intended_for, created_at: new Date(this.now()).toISOString(), automation_id: this.config.boxesAutomationId || null, thread_id: this.config.boxesThreadId || null, budget: { unit: 'seconds', limit: 600 } };
+    const input = { id, job_id: 'bounded-roster', idempotency_key: key, scope, allowed_pages, intended_for, created_at: new Date(this.now()).toISOString(), automation_id: this.config.boxesAutomationId || null, thread_id: this.config.boxesThreadId || null, budget: { unit: 'seconds', limit: 600 } };
     return this.store.saveRun(input);
   }
   async status() {
@@ -67,7 +74,7 @@ export class CollectorRuns {
     if (!this.config.collectorGatesVerified) throw new Error('Invalid collector trigger: external gates are unverified; use supervised upload');
     if (!this.config.boxesRunUrl || !this.config.boxesSecret || !run.thread_id) throw new Error('Invalid collector trigger configuration');
     // Only identifiers and bounded scope go to the model. An isolated broker handles upload capabilities.
-    const input = { prompt: `Perform the observation-only collector contract in prompts/collector-readonly.md. Return local artifacts for run ${run.id}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}. Do not upload, access credentials, or change Yahoo state.`, target: { kind: 'existing_thread', threadId: run.thread_id } };
+    const input = { prompt: `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}. Exact allowed_pages: ${JSON.stringify(run.allowed_pages)}. Do not upload, access credentials, or change Yahoo state.`, target: { kind: 'existing_thread', threadId: run.thread_id } };
     const started = new Date(this.now()).toISOString();
     const attemptId = `collector-${randomUUID()}`;
     try {

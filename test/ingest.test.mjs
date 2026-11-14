@@ -58,6 +58,33 @@ test('source reconciliation rejects forged output even with valid uploaded hashe
   await assert.rejects(h.ingest.commit(cap), /reconciliation/);
 });
 
+test('source reconciliation rejects relabeled observation time with otherwise valid hashes', async () => {
+  const h = await harness(); const cap = await h.ingest.mint({ run_id: h.run.id, attempt_id: 'collector-time-forged' });
+  const data = await bundle(h.run, cap.attempt_id);
+  const output = JSON.parse(data.files[0].bytes); output.source.observed_at = '2028-01-01T00:00:00Z';
+  data.files[0].bytes = Buffer.from(JSON.stringify(output));
+  data.manifest.artifacts[0].bytes = data.files[0].bytes.length;
+  data.manifest.artifacts[0].sha256 = createHash('sha256').update(data.files[0].bytes).digest('hex');
+  await h.ingest.manifest(cap, data.manifest);
+  for (const f of data.files) await h.ingest.upload(cap, f.id, f.bytes);
+  await assert.rejects(h.ingest.commit(cap), /observation time/);
+});
+
+test('commit retry repairs a complete observation pointer after publication/index split', async () => {
+  const h = await harness(); const data = await stage(h, 'collector-index-retry');
+  const update = h.store.updateCompleteObservationIndex.bind(h.store);
+  let fail = true;
+  h.store.updateCompleteObservationIndex = async record => {
+    if (fail) { fail = false; throw new Error('simulated index interruption'); }
+    return update(record);
+  };
+  await assert.rejects(h.ingest.commit(data.capability), /simulated index interruption/);
+  assert.equal((await h.store.list('observations')).length, 1);
+  const retried = await h.ingest.commit(data.capability);
+  assert.equal(retried.status, 'complete');
+  assert.equal((await h.store.completeObservation(h.run.scope)).id, retried.observation_id);
+});
+
 test('login output is retained as a terminal alert without publishing a roster', async () => {
   const h = await harness(); const data = await stage(h, 'collector-login', 'login');
   const result = await h.ingest.commit(data.capability);
@@ -93,6 +120,8 @@ test('HTTP capabilities cannot access setup, analysis, actions or other attempt 
     assert.equal((await request('/api/collector/manifest', cap.token, 'POST', data.manifest)).status, 201);
     for (const file of data.files) assert.equal((await fetch(`${base}/api/collector/artifacts/${file.id}`, { method: 'PUT', headers: { Authorization: `Bearer ${cap.token}` }, body: file.bytes })).status, 201);
     assert.equal((await request('/api/collector/commit', cap.token, 'POST', {})).status, 200);
+    const state = await (await request('/api/state', h.config.token)).json();
+    assert.equal(state.overview.observations.scopes.some(entry => entry.scope.dataset === 'team_roster'), true);
     assert.equal((await (await request('/api/collector/readback', cap.token)).json()).status, 'complete');
     assert.equal((await request('/api/collector/artifacts/unknown', cap.token)).status, 400);
     assert.equal((await request('/api/collector/settings', h.config.token, 'POST', { paused: false })).status, 400);

@@ -136,8 +136,8 @@ $('collector-run').addEventListener('click', () => attempt(async () => {
   pendingCollectorTime ||= new Date().toISOString();
   try {
     const result = await api('collector/run', { intended_for: pendingCollectorTime, dispatch: collector.gates_verified && collector.trigger_configured });
-    pendingCollectorTime = null;
-    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : 'Launch acceptance is not evidence of completed capture.'}`;
+    if (['awaiting_artifacts', 'supervised_upload'].includes(result.launch.status)) pendingCollectorTime = null;
+    $('collector-result').textContent = `${result.run.id} · ${result.launch.status || result.launch.outcome}. ${result.launch.status === 'supervised_upload' ? 'Run prepared for a supervised upload; nothing started in boxes.dev.' : result.launch.outcome === 'failed' ? 'Launch failed; retry will preserve this logical run.' : 'Launch acceptance is not evidence of completed capture.'}`;
   } finally { await loadCollector(); }
 }));
 $('collector-pause').addEventListener('click', () => attempt(async () => { await api('collector/settings', { paused: !collector.paused }); await loadCollector(); }));

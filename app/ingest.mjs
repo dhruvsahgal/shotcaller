@@ -99,9 +99,11 @@ export class CollectorIngest {
       const captureHash = canonicalDigest(capture);
       const artifactIds = artifacts.map(artifact => this.artifactId(claims, artifact.id));
       if (output.league.id !== claims.league_id || output.team.id !== run.scope.team_id || (output.status !== 'needs_login' && canonicalDigest(output.scoring_period) !== canonicalDigest(run.scope.scoring_period))) throw new Error('Invalid collector output scope');
+      if (canonicalDigest(output.allowed_pages) !== canonicalDigest(run.allowed_pages)) throw new Error('Invalid collector allowed pages');
       if (!output.extraction || output.extraction.source_hash !== captureHash) throw new Error('Invalid collector source hash');
       const derived = validateCollectorOutput(extractRosterObservation(capture, { league: output.league, team: output.team, scoring_period: run.scope.scoring_period, allowed_pages: output.allowed_pages }));
       if (canonicalDigest(output.roster) !== canonicalDigest(derived.roster) || (output.status === 'complete' && derived.status !== 'complete')) throw new Error('Invalid collector source reconciliation');
+      if (Date.parse(output.source.observed_at) !== Date.parse(derived.source.observed_at)) throw new Error('Invalid collector source observation time');
       const refs = [...output.source.evidence_refs, ...output.roster.flatMap(row => row.evidence_refs), ...output.extraction.page_inventory.flatMap(page => page.evidence_refs)];
       for (const ref of refs) if (!artifacts.some(a => a.evidence_ref === ref.split('#')[0] && ['source_text', 'screenshot'].includes(a.class))) throw new Error('Invalid collector evidence reference: artifact missing');
       const observationId = `observation-${run.id.slice(4)}`;
@@ -109,8 +111,9 @@ export class CollectorIngest {
       try { observation = await this.store.read(observationId, 'observations'); duplicate = true; }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       if (!observation && output.status !== 'needs_login') {
-        observation = await this.store.saveObservation({ id: observationId, source: { id: this.artifactId(claims, captureArtifact.id), hash: captureHash }, observed_at: output.source.observed_at, observed_at_precision: 'instant', scope: run.scope, coverage: { status: output.status, note: output.coverage.note || 'All visible roster rows reconciled with preserved source artifacts.' }, parser_version: 'bounded-roster-v1', data: output, links: { evidence: artifactIds } });
+        observation = await this.store.saveObservation({ id: observationId, source: { id: this.artifactId(claims, captureArtifact.id), hash: captureHash }, observed_at: derived.source.observed_at, observed_at_precision: 'instant', scope: run.scope, coverage: { status: output.status, note: output.coverage.note || 'All visible roster rows reconciled with preserved source artifacts.' }, parser_version: 'bounded-roster-v1', data: output, links: { evidence: artifactIds } });
       }
+      if (observation) await this.store.updateCompleteObservationIndex(observation);
       let attempt;
       try { attempt = await this.store.read(claims.attempt_id, 'attempts'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }

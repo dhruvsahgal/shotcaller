@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CollectorRuns, collectionSlot, nextCollectionSlot } from '../app/collector-runs.mjs';
 import { harness, scope } from './helpers/collector-ingest.mjs';
+import { validateCollectorRequest } from '../scripts/validate-collector-output.mjs';
 
 test('SGT due slots are durable, paused by default and catch up only latest missed slot', async () => {
   assert.equal(collectionSlot(Date.parse('2026-11-14T09:59:59Z')), '2026-11-13T22:00:00.000Z');
@@ -19,7 +20,12 @@ test('SGT due slots are durable, paused by default and catch up only latest miss
   const result = await runs.tick();
   assert.equal(result.status, 'awaiting_artifacts'); assert.equal(calls.length, 1);
   const body = JSON.parse(calls[0].options.body);
+  const savedRun = (await h.store.list('runs')).at(-1);
+  assert.deepEqual(savedRun.allowed_pages, ['https://basketball.fantasysports.yahoo.com/nba/999/7']);
+  assert.equal(validateCollectorRequest({ method: 'GET', url: savedRun.allowed_pages[0], allowedPages: savedRun.allowed_pages }).allowed, true);
   assert.deepEqual(body.target, { kind: 'existing_thread', threadId: 'existing-thread' });
+  assert.match(body.prompt, /structured capture|ingest-ready artifact bundle/i);
+  assert.match(body.prompt, /Exact allowed_pages: \["https:\/\/basketball\.fantasysports\.yahoo\.com\/nba\/999\/7"\]/);
   assert.equal(body.prompt.includes(h.config.boxesSecret), false);
   assert.equal(body.prompt.includes(h.config.collectorToken), false);
   assert.equal(await runs.tick(), null);
