@@ -13,29 +13,31 @@ const matchup = (index, status = 'final') => ({ id: `m${index}`, status, source_
 ] });
 const input = () => ({
   league_id: '123', season: '2026', week: 4, expected_matchups: 99,
-  frozen_matchup_topology: Array.from({ length: 5 }, (_, index) => ({ id: `m${index}`, team_ids: [`t${index * 2}`, `t${index * 2 + 1}`] })),
-  matchup_topology_source_id: 'forecast-week-4',
   matchups: Array.from({ length: 5 }, (_, index) => matchup(index)),
   evaluations: [{ id: 'evaluation-1', status: 'final', correlation_key: '123:2026:4:m0', source_snapshot_ids: ['forecast-1'] }],
   decisions: [{ id: 'decision-acted', task: 'plan_optimization', answer: 'Add A' }, { id: 'decision-only', task: 'plan_optimization', answer: 'Add B' }],
   actions: [{ id: 'forged-action', decision_id: 'decision-only', status: 'verified', source_snapshot_ids: ['forged-source'] }],
-  trusted_action_outcomes: [{ kind: 'action_outcome', id: 'outcome-1', intent_id: 'action-1', attempt_id: 'attempt-1', execution_mode: 'live', outcome: 'applied', requires_reconciliation: false, before_evidence_ids: ['action-before'], after_evidence_ids: ['action-after'] }],
-  trusted_decision_action_links: [{ decision_id: 'decision-acted', intent_id: 'action-1', outcome_id: 'outcome-1' }],
-  season_history_ids: ['season-history-v2', 'season-history-v1'], previous_report_id: 'report-week-3',
   lineup_days: [{ date: '2026-11-12', benched_with_game: ['Player X', 'Player Y'], source_snapshot_ids: ['lineup-source'] }],
   recap_decision: { id: 'recap-1', task: 'recap_draft', answer: 'League recap draft', snapshot_ids: ['recap-source'] }
+});
+const trustedContext = () => ({
+  frozen_matchup_topology: Array.from({ length: 5 }, (_, index) => ({ id: `m${index}`, team_ids: [`t${index * 2}`, `t${index * 2 + 1}`] })),
+  matchup_topology_source_id: 'forecast-week-4',
+  action_outcomes: [{ kind: 'action_outcome', id: 'outcome-1', intent_id: 'action-1', attempt_id: 'attempt-1', execution_mode: 'live', outcome: 'applied', requires_reconciliation: false, before_evidence_ids: ['action-before'], after_evidence_ids: ['action-after'] }],
+  decision_action_links: [{ decision_id: 'decision-acted', intent_id: 'action-1', outcome_id: 'outcome-1' }],
+  season_history_ids: ['season-history-v2', 'season-history-v1'], previous_report_id: 'report-week-3'
 });
 
 test('weekly report is provisional until all five matchups are final', () => {
   const value = input();
   value.matchups[4] = matchup(4, 'provisional');
-  const report = buildWeeklyReport(value);
+  const report = buildWeeklyReport(value, trustedContext());
   assert.equal(report.status, 'provisional');
   assert.match(report.caveats.join(' '), /not final/i);
 });
 
 test('weekly report separates verified actions, unexecuted advice and draft recap', () => {
-  const report = buildWeeklyReport(input());
+  const report = buildWeeklyReport(input(), trustedContext());
   assert.equal(report.status, 'final');
   assert.deepEqual(report.decision_review.verified.map(row => row.decision_id), ['decision-acted']);
   assert.deepEqual(report.decision_review.unexecuted.map(row => row.id), ['decision-only']);
@@ -54,25 +56,26 @@ test('weekly report separates verified actions, unexecuted advice and draft reca
 
 test('weekly report cannot be final for empty, duplicate or incomplete matchup topology', () => {
   const empty = input();
-  empty.frozen_matchup_topology = [];
   empty.matchups = [];
-  assert.equal(buildWeeklyReport(empty).status, 'provisional');
+  const emptyContext = trustedContext();
+  emptyContext.frozen_matchup_topology = [];
+  assert.equal(buildWeeklyReport(empty, emptyContext).status, 'provisional');
 
   const duplicate = input();
   duplicate.matchups[4] = structuredClone(duplicate.matchups[3]);
-  assert.equal(buildWeeklyReport(duplicate).status, 'provisional');
-  assert.match(buildWeeklyReport(duplicate).caveats.join(' '), /duplicate/i);
+  assert.equal(buildWeeklyReport(duplicate, trustedContext()).status, 'provisional');
+  assert.match(buildWeeklyReport(duplicate, trustedContext()).caveats.join(' '), /duplicate/i);
 
   const incomplete = input();
   incomplete.matchups.pop();
-  assert.equal(buildWeeklyReport(incomplete).status, 'provisional');
-  assert.match(buildWeeklyReport(incomplete).caveats.join(' '), /do not exactly match/i);
+  assert.equal(buildWeeklyReport(incomplete, trustedContext()).status, 'provisional');
+  assert.match(buildWeeklyReport(incomplete, trustedContext()).caveats.join(' '), /do not exactly match/i);
 });
 
 test('missing shooting attempts produce explicit partial coverage', () => {
   const value = input();
   delete value.matchups[0].teams[0].stats.fga;
-  const report = buildWeeklyReport(value);
+  const report = buildWeeklyReport(value, trustedContext());
   assert.equal(report.status, 'partial');
   assert.equal(report.category_coverage.complete, false);
   assert.deepEqual(report.category_coverage.missing[0], { matchup_id: 'm0', team_id: 't0', category: 'fg_pct' });
@@ -83,9 +86,9 @@ test('forged verified action labels cannot enter the applied decision review', (
   const value = input();
   value.decisions = [{ id: 'forged-decision', task: 'plan_optimization' }];
   value.actions = [{ id: 'forged', decision_id: 'forged-decision', status: 'verified' }];
-  value.trusted_action_outcomes = [];
-  value.trusted_decision_action_links = [];
-  const report = buildWeeklyReport(value);
+  value.trusted_action_outcomes = [{ kind: 'action_outcome', id: 'forged-outcome', intent_id: 'forged', attempt_id: 'forged', execution_mode: 'live', outcome: 'applied', requires_reconciliation: false, before_evidence_ids: ['forged-before'], after_evidence_ids: ['forged-after'] }];
+  value.trusted_decision_action_links = [{ decision_id: 'forged-decision', intent_id: 'forged', outcome_id: 'forged-outcome' }];
+  const report = buildWeeklyReport(value, { ...trustedContext(), action_outcomes: [], decision_action_links: [] });
   assert.deepEqual(report.decision_review.verified, []);
   assert.deepEqual(report.decision_review.unexecuted.map(row => row.id), ['forged-decision']);
 });
@@ -93,11 +96,11 @@ test('forged verified action labels cannot enter the applied decision review', (
 test('a corrected report appends an immutable version and preserves the original', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shotcaller-report-'));
   const store = new Store(root);
-  const original = await store.saveReport(buildWeeklyReport(input()));
+  const original = await store.saveReport(buildWeeklyReport(input(), trustedContext()));
   const correctedInput = input();
   correctedInput.correction_of = original.id;
   correctedInput.matchups[0].teams[0].stats.pts = 999;
-  const corrected = await store.saveReport(buildWeeklyReport(correctedInput));
+  const corrected = await store.saveReport(buildWeeklyReport(correctedInput, trustedContext()));
   assert.notEqual(corrected.id, original.id);
   assert.equal(corrected.report.correction_of, original.id);
   assert.equal((await store.read(original.id, 'reports')).report.matchups[0].teams[0].stats.pts, 400);

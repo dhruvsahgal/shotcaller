@@ -31,12 +31,12 @@ const duplicates = values => [...new Set(values.filter((value, index) => values.
 const sortedIds = values => values.filter(value => typeof value === 'string' && value).sort();
 const sameIds = (left, right) => left.length === right.length && left.every((value, index) => value === right[index]);
 
-function reportTopology(input) {
-  const expected = Array.isArray(input.frozen_matchup_topology) ? input.frozen_matchup_topology : [];
+function reportTopology(input, context) {
+  const expected = Array.isArray(context.frozen_matchup_topology) ? context.frozen_matchup_topology : [];
   const expectedIds = expected.map(row => row?.id).filter(Boolean);
   const actualIds = input.matchups.map(row => row?.id).filter(Boolean);
   const issues = [];
-  if (!expected.length || typeof input.matchup_topology_source_id !== 'string' || !input.matchup_topology_source_id) issues.push('Frozen matchup topology and its source ID are required before the report can be final.');
+  if (!expected.length || typeof context.matchup_topology_source_id !== 'string' || !context.matchup_topology_source_id) issues.push('Frozen matchup topology and its source ID are required before the report can be final.');
   if (expectedIds.length !== expected.length || duplicates(expectedIds).length) issues.push('Frozen matchup topology has missing or duplicate matchup IDs.');
   if (duplicates(actualIds).length) issues.push('Observed matchups contain duplicate IDs.');
   if (!sameIds(sortedIds(expectedIds), sortedIds(actualIds))) issues.push('Observed matchup IDs do not exactly match the frozen topology.');
@@ -60,14 +60,14 @@ function categoryCoverage(matchups) {
 
 const appliedOutcome = outcome => outcome?.kind === 'action_outcome' && outcome?.execution_mode === 'live' && outcome?.outcome === 'applied' && !outcome?.requires_reconciliation && outcome?.id && outcome?.intent_id && outcome?.attempt_id && Array.isArray(outcome?.before_evidence_ids) && outcome.before_evidence_ids.length > 0 && Array.isArray(outcome?.after_evidence_ids) && outcome.after_evidence_ids.length > 0;
 
-export function buildWeeklyReport(input) {
+export function buildWeeklyReport(input, trustedContext = {}) {
   if (!input?.league_id || !input?.season || !Number.isInteger(input.week) || !Array.isArray(input.matchups)) throw new Error('Invalid weekly report input');
-  const topology = reportTopology(input);
+  const topology = reportTopology(input, trustedContext);
   const categories = categoryCoverage(input.matchups);
-  const trustedOutcomes = input.trusted_action_outcomes || [];
+  const trustedOutcomes = trustedContext.action_outcomes || [];
   const outcomeDuplicates = new Set(duplicates(trustedOutcomes.map(row => row?.id).filter(Boolean)));
   const outcomes = new Map(trustedOutcomes.filter(row => appliedOutcome(row) && !outcomeDuplicates.has(row.id)).map(row => [row.id, row]));
-  const trustedLinks = input.trusted_decision_action_links || [];
+  const trustedLinks = trustedContext.decision_action_links || [];
   const duplicatedDecisions = new Set(duplicates(trustedLinks.map(row => row?.decision_id).filter(Boolean)));
   const duplicatedOutcomes = new Set(duplicates(trustedLinks.map(row => row?.outcome_id).filter(Boolean)));
   const links = new Map(trustedLinks.filter(row => row?.decision_id && row?.intent_id && row?.outcome_id && !duplicatedDecisions.has(row.decision_id) && !duplicatedOutcomes.has(row.outcome_id)).map(row => [row.decision_id, row]));
@@ -82,7 +82,7 @@ export function buildWeeklyReport(input) {
   const sourceSnapshotIds = unique([
     ...input.matchups.flatMap(row => row.source_snapshot_ids || []),
     ...(input.evaluations || []).flatMap(row => row.source_snapshot_ids || row.evaluation?.source_snapshot_ids || []),
-    ...(input.trusted_action_outcomes || []).flatMap(row => [...(row.before_evidence_ids || []), ...(row.after_evidence_ids || [])]),
+    ...trustedOutcomes.flatMap(row => [...(row.before_evidence_ids || []), ...(row.after_evidence_ids || [])]),
     ...(input.lineup_days || []).flatMap(row => row.source_snapshot_ids || []),
     ...(input.recap_decision?.snapshot_ids || [])
   ]);
@@ -93,8 +93,8 @@ export function buildWeeklyReport(input) {
     schema_version: 1, kind: 'weekly_report', status,
     league_id: String(input.league_id), season: String(input.season), week: input.week,
     created_at: input.created_at || new Date().toISOString(), correction_of: input.correction_of || null,
-    season_history_ids: unique(input.season_history_ids || []), previous_report_id: input.previous_report_id || null,
-    matchup_topology_source_id: input.matchup_topology_source_id || null,
+    season_history_ids: unique(trustedContext.season_history_ids || []), previous_report_id: trustedContext.previous_report_id || null,
+    matchup_topology_source_id: trustedContext.matchup_topology_source_id || null,
     expected_matchups: topology.expected_matchup_ids.length, finalized_matchups: input.matchups.filter(row => row.status === 'final').length,
     topology_coverage: topology, category_coverage: categories,
     source_snapshot_ids: sourceSnapshotIds, matchups: structuredClone(input.matchups),
