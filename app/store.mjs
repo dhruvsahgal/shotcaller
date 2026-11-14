@@ -4,6 +4,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { historicalShapeError } from './import-validation.mjs';
 
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
+const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const canonical = value => Array.isArray(value) ? value.map(canonical) : plainObject(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+export const canonicalDigest = value => digest(canonical(value));
 export function safeId(id) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id)) throw new Error('Invalid identifier');
   return id;
@@ -16,9 +19,12 @@ export async function atomicJSON(file, value) {
   try { await rename(temp, file); } finally { await rm(temp, { force: true }); }
 }
 export class Store {
-  constructor(root) { this.root = root; }
+  constructor(root) { this.root = root; this.initializing = null; }
   async init() {
-    for (const d of ['snapshots', 'decisions']) await mkdir(join(this.root, d), { recursive: true, mode: 0o700 });
+    if (!this.initializing) {
+      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
+    }
+    await this.initializing;
   }
   async publish(record, folder = 'snapshots', markdown) {
     await this.init();
@@ -65,9 +71,22 @@ export class Store {
     try { return this.read(JSON.parse(await readFile(join(this.root, 'latest.json'), 'utf8')).id); }
     catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   }
+  async latestForecast() {
+    try { return this.read(JSON.parse(await readFile(join(this.root, 'latest-forecast.json'), 'utf8')).id, 'forecasts'); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  }
   async decision(record) {
     const saved = { ...record, id: `decision-${randomUUID()}`, stored_at: new Date().toISOString() };
     saved.content_hash = digest(saved);
     return this.publish(saved, 'decisions', `# ShotCaller decision\n\nTask: ${record.task}\n\nObserved: ${record.created_at}\n\nPrompt: ${record.prompt_hash}\n\nEvidence: ${record.snapshot_ids.join(', ')}\n\n${record.answer}\n`);
+  }
+  async saveForecast(forecast) {
+    const inputSources = forecast?.input?.source_snapshot_ids;
+    if (!forecast || !['complete', 'partial'].includes(forecast.status) || !/^[a-f0-9]{64}$/.test(forecast.input_hash || '') || !Array.isArray(forecast.source_snapshot_ids) || !forecast.source_snapshot_ids.length || !forecast.input || typeof forecast.input !== 'object' || canonicalDigest(forecast.input) !== forecast.input_hash || JSON.stringify(inputSources) !== JSON.stringify(forecast.source_snapshot_ids) || forecast.input.league_id !== forecast.league_id || forecast.input.week !== forecast.week || typeof forecast.algorithm_version !== 'string' || !forecast.algorithm_version || typeof forecast.league_id !== 'string' || !forecast.league_id || !Number.isInteger(forecast.week) || !Number.isFinite(Date.parse(forecast.created_at)) || !Array.isArray(forecast.teams) || !Array.isArray(forecast.matchups)) throw new Error('Invalid forecast');
+    const saved = { schema_version: 1, kind: 'league_forecast', id: `forecast-${randomUUID()}`, stored_at: new Date().toISOString(), source_snapshot_ids: forecast.source_snapshot_ids, input_hash: forecast.input_hash, algorithm_version: forecast.algorithm_version, status: forecast.status, created_at: forecast.created_at, forecast };
+    saved.content_hash = digest(forecast);
+    const record = await this.publish(saved, 'forecasts');
+    await atomicJSON(join(this.root, 'latest-forecast.json'), { id: record.id });
+    return record;
   }
 }

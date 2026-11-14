@@ -11,6 +11,7 @@ import { historicalShapeError } from './import-validation.mjs';
 import { makeDecision, promptInfo, tasks } from './decisions.mjs';
 import { refreshYahoo } from './yahoo.mjs';
 import { loadSettings, saveSettings, setupStatus, saveYahooState } from './setup.mjs';
+import { buildForecast, validateForecastInput } from './forecast.mjs';
 
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/overview.js': ['overview.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
 function authorized(req, token) {
@@ -69,12 +70,26 @@ export async function createApp(config, options = {}) {
         } finally { configuring = false; }
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
-        const records = await store.list(), decisions = await store.list('decisions');
-        let prompt; try { const p = await promptInfo(config.promptPath); prompt = { hash: p.hash, text: p.text, ready: true }; } catch { prompt = { ready: false, error: 'Master prompt unavailable; decisions disabled' }; }
+        const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
+        const [records, decisions, latestForecast, latest, prompt] = await Promise.all([store.list(), store.list('decisions'), store.latestForecast(), store.latest(), promptRead]);
         const overview = buildOverview(records, decisions, config.leagueId);
-        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: (await store.latest())?.id || null, snapshots: overview.sources, overview, analysis: analyze(records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload))), decisions });
+        const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
+        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload))), forecast, decisions });
       }
       if (req.method === 'GET' && /^\/api\/snapshots\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1))));
+      if (req.method === 'GET' && /^\/api\/forecasts\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1)), 'forecasts'));
+      if (req.method === 'POST' && url.pathname === '/api/forecasts') {
+        const input = await body(req, 1048576);
+        if (input.league_id !== config.leagueId) return send(400, { error: 'Forecast league does not match this ShotCaller instance' });
+        if (input.expected_teams !== config.expectedTeams) return send(400, { error: 'Forecast team count does not match league settings' });
+        validateForecastInput(input);
+        const sources = await Promise.all((input.source_snapshot_ids || []).map(id => store.read(id)));
+        for (const source of sources) {
+          const sourceLeague = source.league_id ?? source.payload?.league_id;
+          if (sourceLeague == null || String(sourceLeague) !== String(config.leagueId)) return send(400, { error: 'Forecast source is not scoped to this league' });
+        }
+        return send(201, await store.saveForecast(buildForecast(input)));
+      }
       if (req.method === 'POST' && url.pathname === '/api/refresh') {
         if (refreshing || configuring) return send(409, { error: 'A refresh or setup change is already running' });
         refreshing = true;

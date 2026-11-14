@@ -11,6 +11,7 @@ The accompanying [SQLite DDL](../schema/shotcaller.sql) is a future design, not 
 | Captures and imports | `/data/snapshots/<record-id>/snapshot.json` | Immutable evidence, including original dates, coverage and raw tables where available |
 | Decisions | `/data/decisions/<decision-id>/snapshot.json` | Advice plus task, model, prompt fingerprint and input snapshot IDs |
 | Decision briefs | `/data/decisions/<decision-id>/brief.md` | Human-readable reasoning linked to evidence |
+| Forecasts | `/data/forecasts/<forecast-id>/snapshot.json` | Frozen numerical ranges, legal starts, assumptions and exact input/source fingerprints |
 | Historical Markdown and source attachments | Private files or imported evidence bundles | Context and source material; never replace structured statistics |
 | Complete-capture pointer | `/data/latest.json` | Most recently published complete browser capture, not necessarily the newest evidence for every subject |
 | Consolidated view | Derived from saved evidence | A read model; it must retain the source and observation date of every section |
@@ -71,6 +72,14 @@ The observation defines units. Per-game figures may be fractional; totals should
 `roster_entry` records ownership and active/bench/IL placement for a particular scoring date, together with eligibility, injury flag and whether a game is scheduled. The scoring date remains null if a screenshot does not establish it. One observation can contain several future dates. A missing row is evidence of a drop only after coverage is known complete and a transaction is confirmed.
 
 `matchup` identifies the two teams and week; `matchup_observation` links each team's statistics and displayed remaining games. Raw scheduled games are not the same as usable starts: a lineup conflict can reduce starts. Do not label a remaining-games count as optimized starts unless that calculation exists.
+
+### Forecast input and output
+
+The Railway API accepts a versioned `forecast_input` at `POST /api/forecasts`. It names the league, season, week, scoring-period dates, explicit RFC 3339 as-of cutoff, Yahoo scoring timezone, roster slots, all teams and matchups, plus immutable source snapshot IDs. Each team supplies sourced actual matchup totals through the cutoff. Each player supplies stable identity, validated eligibility, sourced availability, unique sourced game dates and a per-game baseline containing makes and attempts. The API rejects sources that are not already in the snapshot archive and explicitly scoped to this league.
+
+The transparent baseline computes legal daily assignments before adding statistics. A scheduled game may carry its Yahoo `locked_slot`; locked bench and injury slots stay inactive. Shooting percentages use pooled makes and attempts. The lower scenario excludes questionable, doubtful and unsourced availability; the upper scenario includes them. Category stability also evaluates independent availability combinations for up to six uncertain players per team. Above that safe limit, affected category bounds become unknown rather than consuming unbounded CPU. Missing actual fields, games, player baselines, league teams or matchups remain explicit gaps and make the forecast partial. A frozen forecast records its algorithm version and exact input hash under `/data/forecasts`; recalculating later creates a new record rather than changing the earlier forecast.
+
+The first baseline uses a documented counting-stat value only to resolve competing legal starters. Its polynomial matching step remains safe at the accepted 30-player/20-slot contract boundary. `/api/state` exposes only the latest forecast summary; exact replay inputs remain available from the authenticated forecast record endpoint so append-only history cannot make the main dashboard response grow without bound. Matchup-specific category optimization, probability calibration and live injury/schedule fetchers remain later layers; the stored assumptions make this limitation inspectable.
 
 ### Availability and behavior history
 
