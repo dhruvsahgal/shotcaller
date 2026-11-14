@@ -36,14 +36,14 @@ An existing authenticated remote Chromium connection can also be saved in Setup.
 
 ## What is included
 
-- Cyberpunk dashboard with Evidence, League, Market, Decisions, Setup and System views.
+- Cyberpunk dashboard with Today, Matchup, League, Market, Decisions, Operations, Evidence and System views.
 - Read-only Yahoo collection for league settings, team rosters, statistics, the displayed matchup, available players and transaction history.
 - Immutable source snapshots, explicit partial-capture warnings and dated historical imports.
 - Category comparisons and observed market activity, with no invented manager intentions.
 - A single [master prompt](prompts/shotcaller-system.md) enforced for every model-assisted decision, including follow-ups, valuation and opponent analysis.
 - Private configuration, token-protected APIs and a decision journal with evidence references and prompt fingerprints.
 
-The app advises; it does not make Yahoo trades or roster changes. It does not automatically monitor the league. Historical imports are never presented as fresh captures.
+The app remains advice-only by default. It can persist bounded action proposals and shadow preflights, but live Yahoo mutations remain disabled until each action class passes the documented external pilot and receives a separate one-time manager authorization. Historical imports are never presented as fresh captures.
 
 ## Local development
 

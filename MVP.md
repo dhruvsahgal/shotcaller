@@ -38,7 +38,7 @@ The capture includes settings, league overview, team statistics, the displayed m
 
 Open **Setup** to save your model name, API key and HTTPS chat-completions endpoint. Alternatively, set `LLM_MODEL`, `LLM_API_KEY` and `LLM_ENDPOINT` on the server. Values saved in Setup take precedence over environment defaults and survive restarts on the volume. No key or model is bundled. Request a brief in the dashboard; each call may incur the provider's fees. Saving settings makes no provider request.
 
-Every decision task—including follow-up, opponent modeling, valuation and research synthesis—passes through `app/decisions.mjs`. The adapter reloads `prompts/shotcaller-system.md` on every request, sends its exact bytes as the first system message, and fails before the provider call if it is missing or empty. Source pages and prior answers enter as untrusted JSON data. No model tools or Yahoo mutation endpoints exist.
+Every decision task—including follow-up, opponent modeling, valuation and research synthesis—passes through `app/decisions.mjs`. The adapter reloads `prompts/shotcaller-system.md` on every request, sends its exact bytes as the first system message, and fails before the provider call if it is missing or empty. Source pages and prior answers enter as untrusted JSON data. Models receive no Yahoo mutation tools. A separate bounded executor API can persist signed action intents and shadow preflights; it is isolated from the decision provider and collector.
 
 Each proposed decision saves the task, question, requested/served model, prompt hash, evidence IDs, input hash, prior decision ID, timestamp, usage and answer as JSON, with a Markdown brief alongside it. It is never recorded as an executed transaction. Credentials are excluded.
 
@@ -56,6 +56,9 @@ Except `/health` and static UI files, requests require `Authorization: Bearer <A
 | `POST /api/setup` | Save league/model/CDP settings privately |
 | `POST /api/setup/yahoo` | Upload Yahoo-only Playwright browser state |
 | `POST /api/import` | Import a sourced historical snapshot, idempotently |
+| `GET/POST /api/actions` | Inspect or create immutable action proposals; creation does not authorize execution |
+| `POST /api/actions/:id/authorize` | Sign one exact intent using the dedicated manager approval credential |
+| `GET/POST /api/executor/actions/:id/*` | Executor-only fetch, preflight, arm and readback routes |
 
 A decision body uses `task`, `question`, `snapshot_ids` (1–4 IDs), and `previous_id` when task is `followup`. Allowed tasks: `recommendation`, `opponent_model`, `valuation`, `research_synthesis`, `followup`. The CLI accepts the same JSON with `npm run shotcaller -- decide request.json`. API and CLI share the same decision adapter.
 
@@ -101,3 +104,9 @@ Browser tests use self-contained synthetic fixtures. The user's historical `data
 The app now has a paused cloud-collector control panel and a separate, capability-scoped upload API. A single roster capture can be uploaded as a bounded manifest plus hashed source artifacts, reconciled, and read back from the volume. Runs and attempts survive restart; overlapping attempts cannot publish a second logical dataset. Schedule slots are 06:00/18:00 Singapore with latest-slot catch-up. Live dispatch targets one existing boxes.dev thread and stays gated by default. See [the pilot protocol](docs/operations/boxes-collector.md#railway-ingest-and-schedule-u4).
 
 This does not establish a connected autonomous broker, proven Yahoo mutation guard or full-league pilot. Keep `COLLECTOR_GATES_VERIFIED=false` and the schedule paused until those external checks and a private Railway restore test have receipts.
+
+### Controlled action pilot
+
+Action execution starts in shadow mode with the stop switch active. `APPROVAL_TOKEN`, `EXECUTOR_TOKEN` and `ACTION_SIGNING_KEY` must be distinct private Railway secrets. The collector never receives them. Each proposed lineup, IL, add/drop or trade-response action binds exact IDs, scoring date, expiry, preconditions and a single-use nonce. A separate arm call rechecks stop/takeover and consumes the nonce immediately before any live interaction. Ambiguous or partial outcomes require reconciliation and cannot be blindly retried.
+
+Keep `ACTION_MODE=shadow`, `ACTION_GATES_VERIFIED=false` and `ACTION_ENABLED_CLASSES` empty until the per-class boxes.dev shadow and failure matrix in [the operations guide](docs/operations/boxes-collector.md#separate-bounded-executor) has recorded evidence. No action class is live in this repository or by virtue of a passing local test.

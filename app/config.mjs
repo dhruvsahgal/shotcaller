@@ -9,5 +9,15 @@ export function configuration(env = process.env) {
     const url = new URL(config.boxesRunUrl);
     if (url.protocol !== 'https:' || !/(^|\.)boxes\.dev$/.test(url.hostname) || url.username || url.password || url.hash || url.search) throw new Error('Invalid boxes.dev Run endpoint');
   }
+  Object.assign(config, {
+    approvalToken: env.APPROVAL_TOKEN || '', executorToken: env.EXECUTOR_TOKEN || '', actionSigningKey: env.ACTION_SIGNING_KEY || '',
+    actionMode: env.ACTION_MODE === 'live' ? 'live' : 'shadow', actionGatesVerified: env.ACTION_GATES_VERIFIED === 'true',
+    actionEnabledClasses: (env.ACTION_ENABLED_CLASSES || '').split(',').map(value => value.trim()).filter(Boolean), boxesExecutorThreadId: env.BOXES_EXECUTOR_THREAD_ID || ''
+  });
+  const credentials = [config.token, config.collectorToken, config.approvalToken, config.executorToken].filter(Boolean);
+  if ((config.approvalToken && config.approvalToken.length < 24) || (config.executorToken && config.executorToken.length < 24) || new Set(credentials).size !== credentials.length) throw new Error('Invalid action credentials: use distinct tokens of at least 24 characters');
+  if (config.actionSigningKey && config.actionSigningKey.length < 32) throw new Error('Invalid action signing key');
+  if (config.actionEnabledClasses.some(value => !['lineup_move', 'il_move', 'add_drop', 'trade_response'].includes(value))) throw new Error('Invalid enabled action class');
+  if (config.actionMode === 'live' && (!config.actionGatesVerified || !config.actionSigningKey || !config.approvalToken || !config.executorToken || !config.boxesExecutorThreadId)) throw new Error('Invalid live action configuration: verified gates and isolated credentials are required');
   return config;
 }

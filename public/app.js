@@ -136,8 +136,11 @@ function renderIntelligence() {
     ['Latest complete capture', latest?.observed_at ? ageLine(latest.observed_at) : 'None', latest ? `${latest.observed_at} · ${latest.id}` : 'No complete pointer'],
     ['Master prompt', state.prompt.ready ? 'Ready' : 'Blocked', state.prompt.hash || state.prompt.error],
     ['Decision model', state.model_configured ? 'Configured' : 'Not configured', 'Recommendations remain advice only'],
-    ['Live roster mutations', 'Disabled', 'Requires verified pilot and execution gates']
+    ['Action executor', state.actions?.mode || 'shadow', state.actions?.gates_verified ? `Enabled classes: ${state.actions.enabled_classes.join(', ') || 'none'}` : 'External pilot gates are unverified'],
+    ['Stop switch', state.actions?.control?.stop_switch ? 'ACTIVE' : 'Released', state.actions?.control?.human_takeover ? 'Human takeover is active' : 'No human takeover recorded'],
+    ['Live roster mutations', state.actions?.mode === 'live' && state.actions?.gates_verified ? 'Class bounded' : 'Disabled', 'Each live action still requires a dedicated one-time manager authorization']
   ]));
+  if (state.actions?.intents?.length) operations.append(node('h3', 'Action intents'), table(['Class', 'Mode', 'Scoring date', 'Expires'], state.actions.intents.slice(0, 10).map(row => [row.action_class, row.execution_mode, row.scoring_date, row.expires_at])));
   if (state.overview?.gaps?.length) operations.append(node('h3', 'Coverage gaps'), ...state.overview.gaps.map(gap => node('p', gap, 'caveat')));
 }
 async function load() {

@@ -7,6 +7,7 @@ import { createApp } from '../app/server.mjs';
 import { configuration } from '../app/config.mjs';
 test('API protects private evidence and handles a failed refresh without fake success', async () => {
   const config = { ...configuration(), expectedTeams: 2, dataDir: await mkdtemp(join(tmpdir(), 'shotcaller-api-')), token: 'test-access-token-at-least-24-characters' };
+  Object.assign(config,{approvalToken:'test-approval-token-at-least-24-characters',executorToken:'test-executor-token-at-least-24-characters',collectorToken:'test-collector-token-at-least-24-characters',actionSigningKey:'test-signing-key-with-at-least-32-characters',actionMode:'shadow',actionGatesVerified:false,actionEnabledClasses:[]});
   const app = await createApp(config, { collect: async () => { throw new Error('Yahoo login required. Run npm run login'); } });
   await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${app.address().port}`;
@@ -55,6 +56,15 @@ test('API protects private evidence and handles a failed refresh without fake su
     assert.deepEqual(withIntelligence.intelligence.evaluation.source_snapshot_ids,[importedRecord.id]);
     assert.deepEqual(withIntelligence.intelligence.report.source_snapshot_ids,[importedRecord.id]);
     assert.equal(withIntelligence.intelligence.evaluation_summary.independent_validation_weeks,1);
+    const proposalResponse=await fetch(`${base}/api/actions`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:1,action_class:'lineup_move',league_id:config.leagueId,scoring_date:'2026-11-14',expires_at:'2099-11-15T00:00:00Z',operation:{player_id:'p1',from_slot:'BN',to_slot:'PG'},preconditions:{roster_version:'v1'},source_snapshot_ids:[importedRecord.id]})});
+    assert.equal(proposalResponse.status,201);
+    const actionIntent=await proposalResponse.json();
+    const collectorHeaders={Authorization:`Bearer ${config.collectorToken}`,'Content-Type':'application/json'};
+    const authorizationBody=JSON.stringify({expires_at:'2099-11-14T23:00:00Z',approved_by:'manager',nonce:'42345678-1234-1234-1234-123456789012'});
+    assert.equal((await fetch(`${base}/api/actions/${actionIntent.id}/authorize`,{method:'POST',headers:collectorHeaders,body:authorizationBody})).status,401);
+    assert.equal((await fetch(`${base}/api/actions/${actionIntent.id}/authorize`,{method:'POST',headers:{Authorization:`Bearer ${config.approvalToken}`,'Content-Type':'application/json'},body:authorizationBody})).status,201);
+    assert.equal((await fetch(`${base}/api/executor/actions/${actionIntent.id}`,{headers:{Authorization:`Bearer ${config.collectorToken}`}})).status,401);
+    assert.equal((await fetch(`${base}/api/executor/actions/${actionIntent.id}`,{headers:{Authorization:`Bearer ${config.executorToken}`}})).status,200);
     assert.equal((await fetch(`${base}/api/forecasts/forecast-missing`,{headers})).status,404);
     const importPayload=payload=>fetch(`${base}/api/import`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const foreignResponse = await importPayload({snapshot_id:'foreign',league_id:'999',source:{type:'test'},kind:'collected_documents',documents:[]});

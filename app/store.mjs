@@ -28,7 +28,7 @@ export class Store {
   }
   async init() {
     if (!this.initializing) {
-      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'optimizations', 'evaluations', 'reports', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
+      this.initializing = Promise.all(['snapshots', 'decisions', 'forecasts', 'optimizations', 'evaluations', 'reports', 'action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'runs', 'attempts', 'observations', 'indexes'].map(d => mkdir(join(this.root, d), { recursive: true, mode: 0o700 }))).catch(error => { this.initializing = null; throw error; });
     }
     await this.initializing;
   }

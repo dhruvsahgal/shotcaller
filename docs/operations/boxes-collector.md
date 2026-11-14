@@ -154,3 +154,18 @@ The scheduler preserves failed launch and missing-output timeout receipts and di
 Before promotion, pause collection and back up the entire private volume to encrypted private storage, including `collector`, `collector-artifacts`, `collector-manifests`, `runs`, `attempts`, `observations` and indexes. Restore it to an isolated directory and run the same manifest/readback hash comparison, verify observation source links, then rebuild the observation index and compare pointers. Do not restore over the live volume for this test. Repository tests exercise an isolated fixture restore and 0600 evidence files; an actual Railway backup/restore receipt remains required. Never commit backup contents. U10 covers rotation and long-term retention.
 
 Pending external evidence: live Yahoo Test A, sleep/wake authentication continuity, boxes.dev mutation interception, credential-isolated broker, connected Test B from the cloud, Railway readback, actual private-volume restore and the full-league accuracy/cost pilot. No code test turns these gates green.
+
+## Separate bounded executor
+
+The Yahoo executor is a different boxes.dev thread and trust domain from the collector. The collector token, collector thread and collector automation cannot fetch or authorize action intents. Railway retains `ACTION_SIGNING_KEY`; the manager uses `APPROVAL_TOKEN` for one exact authorization; only the executor receives `EXECUTOR_TOKEN`. Keep all three distinct from `APP_TOKEN`, `COLLECTOR_TOKEN` and the boxes.dev automation secret.
+
+Action flow:
+
+1. The authenticated app creates an immutable proposal containing the action class, league, exact player or offer IDs, Yahoo scoring date, expiry, preconditions and evidence IDs. It is `shadow` unless the individual class has been promoted.
+2. The manager separately authorizes that exact digest using `APPROVAL_TOKEN`. The signed authorization includes a short expiry and single-use nonce. Approval is persisted before boxes.dev is triggered.
+3. Railway sends only the opaque intent ID to `BOXES_EXECUTOR_THREAD_ID`. The executor follows `prompts/executor-bounded.md` and fetches the signed package with `EXECUTOR_TOKEN`.
+4. The executor captures current Yahoo state and requests preflight. Wrong league/date/IDs, locks, limits, capacity, stale availability, stop state or human takeover block it. Shadow mode stops here and records `shadowed`.
+5. A live executor calls the separate arm step immediately before the first mutation. Railway rechecks stop/takeover and atomically consumes the nonce. Only `prepared` permits one exact Yahoo interaction.
+6. Before/after Yahoo evidence and Railway readback are stored. Lost responses, ambiguous state and partial add/drop completion require reconciliation; the executor must not repeat a click to discover whether it worked.
+
+`ACTION_MODE=shadow`, `ACTION_GATES_VERIFIED=false`, an active stop switch and no enabled classes are the defaults. Run a full scoring week in shadow mode for each action class, including expiry, wrong identity/date, lock, stop/takeover, lost response and partial completion fixtures. Only classes with recorded zero-mutation shadow evidence may be named in `ACTION_ENABLED_CLASSES`, and live mode additionally requires the isolated tokens, signing key and executor thread. Code tests do not satisfy that external gate.
