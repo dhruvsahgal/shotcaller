@@ -1,6 +1,6 @@
 import { canonicalDigest } from './store.mjs';
+import { categoryKeys } from './schema.mjs';
 
-export const evaluationCategories = ['fg_pct', 'ft_pct', 'three_pm', 'pts', 'oreb', 'reb', 'ast', 'stl', 'blk'];
 
 const ratio = (stats, made, attempted) => {
   if (Number.isFinite(stats?.[made]) && Number.isFinite(stats?.[attempted])) return stats[attempted] > 0 ? stats[made] / stats[attempted] : null;
@@ -23,7 +23,7 @@ const sourceIds = value => [
   ...(value?.source_snapshot_ids || value?.forecast?.source_snapshot_ids || []),
   ...(value?.matchups || []).flatMap(row => [...(row.source_snapshot_ids || []), ...(row.teams || []).flatMap(team => team.source_snapshot_ids || [])])
 ];
-const unique = values => [...new Set(values.filter(Boolean))].sort();
+export const unique = values => [...new Set(values.filter(Boolean))].sort();
 
 export function evaluateForecast({ forecast_record, outcome, baseline_record = null, evaluated_at = new Date().toISOString(), correction_of = null }) {
   const forecast = unwrap(forecast_record), baseline = baseline_record ? unwrap(baseline_record) : null;
@@ -44,7 +44,7 @@ export function evaluateForecast({ forecast_record, outcome, baseline_record = n
       status: actualMatchup?.status || 'missing',
       teams: matchup.team_ids.map(teamId => {
         const projected = teamById.get(teamId), actual = actualTeams.get(teamId), baselineTeam = baselineById.get(teamId);
-        const categories = Object.fromEntries(evaluationCategories.map(category => {
+        const categories = Object.fromEntries(categoryKeys.map(category => {
           const range = forecastValue(projected, category), observed = categoryValue(actual?.stats, category), baselineRange = forecastValue(baselineTeam, category);
           const absoluteError = Number.isFinite(observed) && Number.isFinite(range.midpoint) ? Math.abs(observed - range.midpoint) : null;
           const baselineError = Number.isFinite(observed) && Number.isFinite(baselineRange.midpoint) ? Math.abs(observed - baselineRange.midpoint) : null;

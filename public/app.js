@@ -151,9 +151,13 @@ async function load() {
   clearTimeout(poll);
   if (state.refresh.status === 'running') poll = setTimeout(() => attempt(load), 2000);
 }
-$('login-form').addEventListener('submit', e => { e.preventDefault(); attempt(async () => { token = $('token').value.trim(); await load(); await loadSetup(); $('token').value = ''; $('login').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; }); });
+async function loadOperations() {
+  state.operations = { ...(state.operations || {}), ...await api('operations') };
+  renderIntelligence();
+}
+$('login-form').addEventListener('submit', e => { e.preventDefault(); attempt(async () => { token = $('token').value.trim(); await load(); await Promise.all([loadSetup(), loadOperations()]); $('token').value = ''; $('login').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; }); });
 $('logout').addEventListener('click', () => { token = ''; location.reload(); });
-document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => { showTab(button.dataset.tab); }));
+document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => { showTab(button.dataset.tab); if (button.dataset.tab === 'operations') void attempt(loadOperations); }));
 $('refresh').addEventListener('click', () => attempt(async () => { await api('refresh', {}); await load(); }));
 async function loadSetup() {
   const settings = await api('setup');

@@ -1,7 +1,7 @@
 import { canonicalDigest } from './store.mjs';
-import { evaluationCategories } from './evaluate.mjs';
+import { categoryKeys } from './schema.mjs';
+import { unique } from './evaluate.mjs';
 
-const unique = values => [...new Set(values.filter(Boolean))].sort();
 const categoryValue = (stats, category) => {
   if (category === 'fg_pct') return stats?.fg_pct ?? (stats?.fga > 0 ? stats.fgm / stats.fga : null);
   if (category === 'ft_pct') return stats?.ft_pct ?? (stats?.fta > 0 ? stats.ftm / stats.fta : null);
@@ -11,14 +11,14 @@ const allPlay = matchups => {
   const teams = matchups.flatMap(row => row.teams || []);
   return teams.map(team => ({
     team_id: team.id, name: team.name,
-    category_ranks: Object.fromEntries(evaluationCategories.map(category => {
+    category_ranks: Object.fromEntries(categoryKeys.map(category => {
       const sorted = teams.map(row => ({ id: row.id, value: categoryValue(row.stats, category) })).filter(row => Number.isFinite(row.value)).sort((a, b) => b.value - a.value);
       const index = sorted.findIndex(row => row.id === team.id);
       return [category, index < 0 ? null : index + 1];
     })),
     all_play: teams.filter(other => other.id !== team.id).reduce((record, other) => {
       let won = 0, lost = 0, tied = 0;
-      for (const category of evaluationCategories) {
+      for (const category of categoryKeys) {
         const own = categoryValue(team.stats, category), theirs = categoryValue(other.stats, category);
         if (!Number.isFinite(own) || !Number.isFinite(theirs)) continue;
         if (own > theirs) won++; else if (own < theirs) lost++; else tied++;

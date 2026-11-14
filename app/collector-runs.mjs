@@ -66,14 +66,13 @@ export class CollectorRuns {
     return this.store.saveRun(input);
   }
   async status() {
-    const settings = await this.settings();
-    const attempts = (await this.store.list('attempts')).filter(a => a.id.startsWith('collector-'));
-    const unresolved = await this.unresolvedReceipt();
+    const [settings, allAttempts, runs] = await Promise.all([this.settings(), this.store.list('attempts'), this.store.list('runs')]);
+    const attempts = allAttempts.filter(a => a.id.startsWith('collector-'));
+    const unresolved = await this.unresolvedReceipt(allAttempts, runs);
     return { ...settings, trigger_configured: Boolean(this.config.boxesRunUrl && this.config.boxesSecret && this.config.boxesThreadId), gates_verified: Boolean(this.config.collectorGatesVerified), unresolved_run: unresolved ? { run_id: unresolved.run.id, status: unresolved.receipt.status, deadline: unresolved.receipt.deadline } : null, attempts: attempts.slice(0, 20), alerts: attempts.filter(a => !['complete', 'partial'].includes(a.outcome)).slice(0, 10) };
   }
-  async unresolvedReceipt() {
-    const runs = await this.store.list('runs');
-    const attempts = await this.store.list('attempts');
+  async unresolvedReceipt(attempts = null, runs = null) {
+    [attempts, runs] = await Promise.all([attempts || this.store.list('attempts'), runs || this.store.list('runs')]);
     const settled = new Set(attempts.filter(attempt => attempt.artifact_ids.length > 0 || ['complete', 'partial', 'failed', 'cancelled', 'needs_login'].includes(attempt.outcome)).map(attempt => attempt.run_id));
     for (const run of runs) {
       if (settled.has(run.id)) continue;

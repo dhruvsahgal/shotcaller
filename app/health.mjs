@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { atomicJSON } from './store.mjs';
+import { atomicJSON, digest } from './store.mjs';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const safeRelative = value => value.split(sep).join('/');
@@ -24,7 +24,7 @@ export async function archiveManifest(root) {
     files.push({ path: file.relative, bytes: content.length, sha256: sha256(content) });
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { schema_version: 1, kind: 'private_archive_manifest', created_at: new Date().toISOString(), files, content_hash: sha256(JSON.stringify(files)) };
+  return { schema_version: 1, kind: 'private_archive_manifest', created_at: new Date().toISOString(), files, content_hash: digest(files) };
 }
 
 async function assertLinks(root) {
@@ -57,7 +57,7 @@ async function assertLinks(root) {
 }
 
 export async function verifyArchive(root, manifest) {
-  if (!manifest || manifest.kind !== 'private_archive_manifest' || !Array.isArray(manifest.files) || sha256(JSON.stringify(manifest.files)) !== manifest.content_hash) throw new Error('Invalid archive manifest');
+  if (!manifest || manifest.kind !== 'private_archive_manifest' || !Array.isArray(manifest.files) || digest(manifest.files) !== manifest.content_hash) throw new Error('Invalid archive manifest');
   for (const expected of manifest.files) {
     let content;
     try { content = await readFile(join(root, expected.path)); }

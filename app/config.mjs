@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { actionClasses } from './permissions.mjs';
 export function configuration(env = process.env) {
   const config = { dataDir: resolve(env.DATA_DIR || '.runtime'), leagueId: env.YAHOO_LEAGUE_ID || '12345', expectedTeams: Number(env.EXPECTED_TEAMS || 10), maxPages: Number(env.MAX_PAGES || 40), dataQuotaBytes: Number(env.DATA_QUOTA_BYTES || 0), modelCallBudget: Number(env.MODEL_CALL_BUDGET || 50), cdpUrl: env.BROWSER_CDP_URL || '', token: env.APP_TOKEN || '', model: env.LLM_MODEL || '', apiKey: env.LLM_API_KEY || '', endpoint: env.LLM_ENDPOINT || 'https://api.openai.com/v1/chat/completions', promptPath: resolve('prompts/shotcaller-system.md'), host: env.HOST || '127.0.0.1', port: Number(env.PORT || 3030) };
   for (const [key, min, max] of [['expectedTeams', 2, 30], ['maxPages', 1, 200], ['port', 1, 65535], ['modelCallBudget', 1, 10000]]) if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) throw new Error(`Invalid ${key} configuration`);
@@ -18,7 +19,7 @@ export function configuration(env = process.env) {
   const credentials = [config.token, config.collectorToken, config.approvalToken, config.executorToken].filter(Boolean);
   if ((config.approvalToken && config.approvalToken.length < 24) || (config.executorToken && config.executorToken.length < 24) || new Set(credentials).size !== credentials.length) throw new Error('Invalid action credentials: use distinct tokens of at least 24 characters');
   if (config.actionSigningKey && config.actionSigningKey.length < 32) throw new Error('Invalid action signing key');
-  if (config.actionEnabledClasses.some(value => !['lineup_move', 'il_move', 'add_drop', 'trade_response'].includes(value))) throw new Error('Invalid enabled action class');
+  if (config.actionEnabledClasses.some(value => !actionClasses.includes(value))) throw new Error('Invalid enabled action class');
   if (config.actionMode === 'live' && (!config.actionGatesVerified || !config.actionSigningKey || !config.approvalToken || !config.executorToken || !config.boxesExecutorThreadId)) throw new Error('Invalid live action configuration: verified gates and isolated credentials are required');
   return config;
 }

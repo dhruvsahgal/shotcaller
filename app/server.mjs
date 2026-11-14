@@ -17,6 +17,7 @@ import { CollectorIngest, ingestLimits } from './ingest.mjs';
 import { optimizePlans } from './optimize.mjs';
 import { evaluateForecast, summarizeEvaluations } from './evaluate.mjs';
 import { buildWeeklyReport } from './reports.mjs';
+import { estimateClaimRisk, screenTrades } from './opponents.mjs';
 import { ActionService } from './actions.mjs';
 import { archiveManifest, ModelUsageLedger, RotatingCredential, storageHealth } from './health.mjs';
 
@@ -115,13 +116,25 @@ export async function createApp(config, options = {}) {
       }
       if (!authorized(req, config.token)) return send(401, { error: 'Enter your ShotCaller access token' });
       if (req.method === 'GET' && url.pathname === '/api/actions') return send(200, await actions.status());
-      if (req.method === 'GET' && url.pathname === '/api/operations') return send(200, { storage: await storageHealth(config.dataDir, config.dataQuotaBytes), model_usage: await usage.status(), collector_credential: await collectorCredential.status(), collector: await collectorRuns.status() });
+      if (req.method === 'GET' && url.pathname === '/api/operations') {
+        const [storage, model_usage, collector_credential, collector] = await Promise.all([storageHealth(config.dataDir, config.dataQuotaBytes), usage.status(), collectorCredential.status(), collectorRuns.status()]);
+        return send(200, { storage, model_usage, collector_credential, collector });
+      }
       if (req.method === 'POST' && url.pathname === '/api/operations/backup-manifest') return send(201, await archiveManifest(config.dataDir));
       if (req.method === 'POST' && url.pathname === '/api/operations/collector-token') return send(200, await collectorCredential.rotate((await body(req)).token));
       if (req.method === 'POST' && url.pathname === '/api/actions') {
         const input = await body(req, 128000);
-        for (const id of input.source_snapshot_ids || []) await readEvidence(store, id);
+        await Promise.all((input.source_snapshot_ids || []).map(id => readEvidence(store, id)));
         return send(201, await actions.propose(input));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/opponents/claim-risk') {
+        const input = await body(req, 128000);
+        return send(200, estimateClaimRisk(input.profile, input.categories, input.scarcity));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/trades/screen') {
+        const input = await body(req, 256000);
+        await Promise.all((input.candidates || []).flatMap(candidate => candidate.source_ids || []).map(id => readEvidence(store, id)));
+        return send(200, screenTrades(input));
       }
       if (actionId && actionId[2] === 'dispatch' && req.method === 'POST') return send(202, await actions.dispatch(decodeURIComponent(actionId[1])));
       if (req.method === 'POST' && url.pathname === '/api/actions/stop') {
@@ -152,7 +165,7 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
-        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage, storage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.list('forecasts'), store.list('optimizations'), store.list('evaluations'), store.list('reports'), store.latestForecast(), store.latest(), promptRead, actions.status(), usage.status(), storageHealth(config.dataDir, config.dataQuotaBytes)]);
+        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.list('forecasts'), store.list('optimizations'), store.list('evaluations'), store.list('reports'), store.latestForecast(), store.latest(), promptRead, actions.status(), usage.status()]);
         const intelligence = {
           forecasts: forecasts.map(row => ({ id: row.id, created_at: row.created_at, status: row.status, source_snapshot_ids: row.source_snapshot_ids, week: row.forecast.week })),
           optimization: optimizations[0]?.optimization || null,
@@ -164,7 +177,7 @@ export async function createApp(config, options = {}) {
         const overview = buildOverview(records, decisions, config.leagueId, observations, intelligence);
         const forecast = latestForecast ? { id: latestForecast.id, stored_at: latestForecast.stored_at, created_at: latestForecast.created_at, status: latestForecast.status, input_hash: latestForecast.input_hash, source_snapshot_ids: latestForecast.source_snapshot_ids, algorithm_version: latestForecast.algorithm_version, league_id: latestForecast.forecast.league_id, season: latestForecast.forecast.season, week: latestForecast.forecast.week, precise: latestForecast.forecast.precise, coverage: latestForecast.forecast.coverage, gaps: latestForecast.forecast.gaps, matchups: latestForecast.forecast.matchups } : null;
         const evidence = [...records.filter(r => r.kind !== 'historical_import' || !historicalShapeError(r.payload)), ...observations];
-        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, intelligence, actions: actionState, operations: { model_usage: modelUsage, storage }, decisions });
+        return send(200, { league_id: config.leagueId, refresh, model_configured: Boolean(config.apiKey && config.model), tasks, prompt, latest_id: latest?.id || null, snapshots: overview.sources, overview, analysis: analyze(evidence), forecast, intelligence, actions: actionState, operations: { model_usage: modelUsage }, decisions });
       }
       if (req.method === 'GET' && /^\/api\/snapshots\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1))));
       if (req.method === 'GET' && /^\/api\/forecasts\/[^/]+$/.test(url.pathname)) return send(200, await store.read(decodeURIComponent(url.pathname.split('/').at(-1)), 'forecasts'));
@@ -183,8 +196,8 @@ export async function createApp(config, options = {}) {
       if (req.method === 'POST' && url.pathname === '/api/optimizations') {
         const input = await body(req, 2097152);
         if (input.forecast_input?.league_id !== config.leagueId) return send(400, { error: 'Optimization league does not match this ShotCaller instance' });
-        for (const id of input.forecast_input?.source_snapshot_ids || []) {
-          const source = await store.read(id);
+        const sources = await Promise.all((input.forecast_input?.source_snapshot_ids || []).map(id => store.read(id)));
+        for (const source of sources) {
           const sourceLeague = source.league_id ?? source.payload?.league_id;
           if (sourceLeague == null || String(sourceLeague) !== String(config.leagueId)) return send(400, { error: 'Optimization source is not scoped to this league' });
         }
@@ -192,10 +205,12 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'POST' && url.pathname === '/api/evaluations') {
         const input = await body(req, 1048576);
-        const forecastRecord = await store.read(input.forecast_id, 'forecasts');
+        const [forecastRecord, baselineRecord] = await Promise.all([
+          store.read(input.forecast_id, 'forecasts'),
+          input.baseline_forecast_id ? store.read(input.baseline_forecast_id, 'forecasts') : null,
+          Promise.all((input.outcome?.source_snapshot_ids || []).map(id => readEvidence(store, id)))
+        ]);
         if (String(forecastRecord.forecast.league_id) !== String(config.leagueId)) return send(400, { error: 'Evaluation league does not match this ShotCaller instance' });
-        const baselineRecord = input.baseline_forecast_id ? await store.read(input.baseline_forecast_id, 'forecasts') : null;
-        for (const id of input.outcome?.source_snapshot_ids || []) await readEvidence(store, id);
         const evaluation = evaluateForecast({ forecast_record: forecastRecord, baseline_record: baselineRecord, outcome: input.outcome, correction_of: input.correction_of || null });
         return send(201, await store.saveEvaluation(evaluation));
       }
@@ -203,7 +218,7 @@ export async function createApp(config, options = {}) {
         const input = await body(req, 2097152);
         if (String(input.league_id) !== String(config.leagueId)) return send(400, { error: 'Report league does not match this ShotCaller instance' });
         const report = buildWeeklyReport(input);
-        for (const id of report.source_snapshot_ids) await readEvidence(store, id);
+        await Promise.all(report.source_snapshot_ids.map(id => readEvidence(store, id)));
         return send(201, await store.saveReport(report));
       }
       if (req.method === 'POST' && url.pathname === '/api/refresh') {

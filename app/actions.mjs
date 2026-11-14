@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { atomicJSON, canonicalDigest } from './store.mjs';
 import { actionClasses, signAuthorization, verifyAuthorization } from './permissions.mjs';
 import { strictInstant } from './time.mjs';
+import { isPlainObject } from './value.mjs';
 
-const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const exact = (value, keys) => isPlainObject(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
 const playerIds = operation => [operation.player_id, operation.add_player_id, operation.drop_player_id].filter(Boolean);
@@ -89,9 +90,9 @@ export class ActionService {
     });
   }
   async package(id) {
-    const intent = await this.store.read(id, 'action-intents'), record = await this.store.read(`authorization-${id.slice(7)}`, 'action-authorizations');
+    const [intent, record, control] = await Promise.all([this.store.read(id, 'action-intents'), this.store.read(`authorization-${id.slice(7)}`, 'action-authorizations'), this.control()]);
     verifyAuthorization(record.authorization, intent, this.config.actionSigningKey, this.now());
-    return { intent, authorization: record.authorization, control: await this.control() };
+    return { intent, authorization: record.authorization, control };
   }
   async prepare(id, input) {
     return this.serial(async () => {
@@ -131,7 +132,7 @@ export class ActionService {
   async readback(id, input) {
     return this.serial(async () => {
       if (!exact(input, ['attempt_id', 'outcome', 'before_evidence_ids', 'after_evidence_ids', 'visible_state']) || !['applied', 'blocked', 'ambiguous', 'partial', 'shadowed'].includes(input.outcome) || !Array.isArray(input.before_evidence_ids) || !Array.isArray(input.after_evidence_ids)) throw new Error('Invalid action readback');
-      const intent = await this.store.read(id, 'action-intents'), attempt = await this.store.read(input.attempt_id, 'action-attempts');
+      const [intent, attempt] = await Promise.all([this.store.read(id, 'action-intents'), this.store.read(input.attempt_id, 'action-attempts')]);
       if (attempt.intent_id !== id) throw new Error('Invalid action attempt binding');
       if (attempt.status === 'shadowed' && input.outcome !== 'shadowed') throw new Error('Shadow actions cannot report a live mutation');
       const value = { schema_version: 1, kind: 'action_outcome', id: `outcome-${input.attempt_id}`, intent_id: id, attempt_id: input.attempt_id, action_class: intent.action_class, execution_mode: intent.execution_mode, outcome: input.outcome, before_evidence_ids: input.before_evidence_ids, after_evidence_ids: input.after_evidence_ids, visible_state: input.visible_state, recorded_at: new Date(this.now()).toISOString(), requires_reconciliation: ['ambiguous', 'partial'].includes(input.outcome) };
