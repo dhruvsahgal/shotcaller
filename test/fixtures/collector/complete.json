@@ -1,0 +1,48 @@
+{
+  "contract_version": 1,
+  "collector_mode": "observation_only",
+  "decision_output": false,
+  "status": "complete",
+  "league": { "id": "999", "name": "Synthetic League" },
+  "team": { "id": "7", "name": "Synthetic Team" },
+  "scoring_period": { "kind": "week", "key": "5", "timezone": "America/Los_Angeles" },
+  "scope": { "dataset": "team_roster", "league_id": "999", "team_id": "7" },
+  "allowed_pages": ["https://basketball.fantasysports.yahoo.com/nba/999/7"],
+  "source": {
+    "url": "https://basketball.fantasysports.yahoo.com/nba/999/7",
+    "observed_at": "2026-11-14T10:15:30Z",
+    "evidence_refs": ["evidence/roster-view.txt#table"]
+  },
+  "coverage": {
+    "visible_rows": 2,
+    "extracted_rows": 2,
+    "missing_rows": 0,
+    "missing_fields": [],
+    "row_reconciled": true,
+    "note": null
+  },
+  "roster": [
+    {
+      "player_id": "101",
+      "player_url": "https://sports.yahoo.com/nba/players/101/",
+      "name": "Avery Example",
+      "nba_team": "AAA",
+      "eligibility": ["PG", "SG"],
+      "slot": { "group": "active", "label": "PG" },
+      "injury": null,
+      "evidence_refs": ["evidence/roster-view.txt#row-1"]
+    },
+    {
+      "player_id": "202",
+      "player_url": "https://sports.yahoo.com/nba/players/202/",
+      "name": "Blake Sample",
+      "nba_team": "BBB",
+      "eligibility": ["SF", "PF"],
+      "slot": { "group": "bench", "label": "BN" },
+      "injury": "GTD",
+      "evidence_refs": ["evidence/roster-view.txt#row-2"]
+    }
+  ],
+  "login": { "required": false, "challenge": null },
+  "warnings": []
+}

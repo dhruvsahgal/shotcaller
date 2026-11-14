@@ -1,0 +1,27 @@
+{
+  "contract_version": 1,
+  "collector_mode": "observation_only",
+  "decision_output": false,
+  "status": "needs_login",
+  "league": { "id": "999", "name": null },
+  "team": { "id": "7", "name": null },
+  "scoring_period": { "kind": null, "key": null, "timezone": null },
+  "scope": { "dataset": "team_roster", "league_id": "999", "team_id": "7" },
+  "allowed_pages": ["https://basketball.fantasysports.yahoo.com/nba/999/7"],
+  "source": {
+    "url": "https://basketball.fantasysports.yahoo.com/nba/999/7",
+    "observed_at": "2026-11-14T10:25:30Z",
+    "evidence_refs": ["evidence/login-challenge.txt#passkey"]
+  },
+  "coverage": {
+    "visible_rows": null,
+    "extracted_rows": 0,
+    "missing_rows": null,
+    "missing_fields": ["league.name", "team.name", "scoring_period"],
+    "row_reconciled": false,
+    "note": "Yahoo showed a passkey challenge before the roster was visible."
+  },
+  "roster": [],
+  "login": { "required": true, "challenge": "passkey" },
+  "warnings": ["Human login is required in the shared Browser."]
+}
