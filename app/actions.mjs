@@ -10,6 +10,26 @@ const exact = (value, keys) => isPlainObject(value) && Object.keys(value).length
 const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value);
 const playerIds = operation => [operation.player_id, operation.add_player_id, operation.drop_player_id].filter(Boolean);
+const ilSlot = slot => typeof slot === 'string' && slot.startsWith('IL');
+const readbackFields = input => ({ outcome: input.outcome, before_evidence_ids: input.before_evidence_ids, after_evidence_ids: input.after_evidence_ids, visible_state: input.visible_state });
+
+export const actionAttemptTransitions = Object.freeze({
+  proposed: Object.freeze(['blocked', 'shadowed', 'preflight_passed']),
+  preflight_passed: Object.freeze(['blocked', 'prepared'])
+});
+
+export const actionOutcomeTransitions = Object.freeze({
+  prepared: Object.freeze(['applied', 'blocked', 'ambiguous', 'partial']),
+  shadowed: Object.freeze(['shadowed']),
+  ambiguous: Object.freeze(['applied', 'blocked', 'ambiguous', 'partial']),
+  partial: Object.freeze(['applied', 'blocked', 'ambiguous', 'partial']),
+  applied: Object.freeze([]),
+  blocked: Object.freeze([])
+});
+
+function assertTransition(map, from, to) {
+  if (!map[from]?.includes(to)) throw new Error(`Forbidden action transition: ${from} -> ${to}`);
+}
 
 export function validateActionProposal(input, now = Date.now()) {
   if (!exact(input, ['version', 'action_class', 'league_id', 'scoring_date', 'expires_at', 'operation', 'preconditions', 'source_snapshot_ids'])) throw new Error('Invalid action proposal fields');
@@ -18,7 +38,7 @@ export function validateActionProposal(input, now = Date.now()) {
   if (!input.preconditions || typeof input.preconditions !== 'object' || Array.isArray(input.preconditions)) throw new Error('Invalid action preconditions');
   const operation = input.operation;
   if (input.action_class === 'lineup_move' && (!exact(operation, ['player_id', 'from_slot', 'to_slot']) || ![operation.player_id, operation.from_slot, operation.to_slot].every(identifier))) throw new Error('Invalid lineup move');
-  if (input.action_class === 'il_move' && (!exact(operation, ['player_id', 'from_slot', 'to_slot']) || ![operation.player_id, operation.from_slot, operation.to_slot].every(identifier))) throw new Error('Invalid IL move');
+  if (input.action_class === 'il_move' && (!exact(operation, ['player_id', 'from_slot', 'to_slot']) || ![operation.player_id, operation.from_slot, operation.to_slot].every(identifier) || ilSlot(operation.from_slot) === ilSlot(operation.to_slot))) throw new Error('Invalid IL move');
   if (input.action_class === 'add_drop' && (!exact(operation, ['add_player_id', 'drop_player_id']) || !identifier(operation.add_player_id) || !(operation.drop_player_id === null || identifier(operation.drop_player_id)))) throw new Error('Invalid add/drop');
   if (input.action_class === 'trade_response' && (!exact(operation, ['offer_id', 'response']) || !identifier(operation.offer_id) || !['accept', 'reject'].includes(operation.response))) throw new Error('Invalid trade response');
   return structuredClone(input);
@@ -41,8 +61,13 @@ export function preflightAction(intent, state, control = {}, now = Date.now()) {
   }
   if (intent.action_class === 'il_move') {
     if (!roster.has(operation.player_id) || state?.slots?.[operation.player_id] !== operation.from_slot) reasons.push('The IL player or source slot changed.');
-    if (!state?.injury_eligible_player_ids?.includes(operation.player_id)) reasons.push('The player is not currently IL eligible.');
-    if ((state?.open_il_slots ?? 0) < 1 && operation.to_slot.startsWith('IL')) reasons.push('No IL slot is open.');
+    if (ilSlot(operation.to_slot)) {
+      if (!state?.injury_eligible_player_ids?.includes(operation.player_id)) reasons.push('The player is not currently IL eligible.');
+      if ((state?.open_il_slots ?? 0) < 1) reasons.push('No IL slot is open.');
+    } else {
+      if (!(state?.eligible_slots?.[operation.player_id] || []).includes(operation.to_slot)) reasons.push('The active destination slot is not currently eligible.');
+      if ((state?.open_active_slots ?? 0) < 1) reasons.push('No active roster slot is open for IL activation.');
+    }
   }
   if (intent.action_class === 'add_drop') {
     if (!state?.available_player_ids?.includes(operation.add_player_id)) reasons.push('The add candidate is no longer available.');
@@ -60,9 +85,27 @@ export function preflightAction(intent, state, control = {}, now = Date.now()) {
 }
 
 export class ActionService {
-  constructor(config, store, { now = () => Date.now(), fetcher = fetch } = {}) { this.config = config; this.store = store; this.now = now; this.fetcher = fetcher; this.root = join(config.dataDir, 'actions'); this.queue = Promise.resolve(); }
-  async init() { await mkdir(join(this.root, 'consumed'), { recursive: true, mode: 0o700 }); }
+  constructor(config, store, { now = () => Date.now(), fetcher = fetch, evidenceValidator = null } = {}) { this.config = config; this.store = store; this.now = now; this.fetcher = fetcher; this.evidenceValidator = evidenceValidator; this.root = join(config.dataDir, 'actions'); this.queue = Promise.resolve(); }
+  async init() { await Promise.all([mkdir(join(this.root, 'consumed'), { recursive: true, mode: 0o700 }), mkdir(join(this.config.dataDir, 'action-reconciliations'), { recursive: true, mode: 0o700 })]); }
   serial(operation) { const pending = this.queue.then(operation, operation); this.queue = pending.catch(() => {}); return pending; }
+  liveConfigurationAllows(intent) {
+    return intent.execution_mode === 'live' && this.config.actionMode === 'live' && this.config.actionGatesVerified === true && this.config.actionEnabledClasses.includes(intent.action_class);
+  }
+  assertLiveConfiguration(intent) {
+    if (!this.liveConfigurationAllows(intent)) throw new Error('Live action mode, promotion gates, or enabled class changed');
+  }
+  async validateEvidence(ids, phase, intentId) {
+    if (!Array.isArray(ids) || !ids.length || ids.some(id => !identifier(id)) || new Set(ids).size !== ids.length) throw new Error(`Invalid ${phase} action evidence`);
+    if (this.evidenceValidator) await this.evidenceValidator({ ids: [...ids], phase, intent_id: intentId });
+    return [...ids];
+  }
+  validateFreshObservation(observedAt) {
+    if (!strictInstant(observedAt)) throw new Error('Invalid action observation time');
+    const age = this.now() - Date.parse(observedAt);
+    const maxAge = this.config.actionMaxObservationAgeMs ?? 120_000;
+    if (age < 0 || age > maxAge) throw new Error('Action state evidence is stale or from the future');
+    return observedAt;
+  }
   async control() {
     try { return JSON.parse(await readFile(join(this.root, 'control.json'), 'utf8')); }
     catch (error) { if (error.code === 'ENOENT') return { stop_switch: true, human_takeover: false, updated_at: null }; throw error; }
@@ -75,14 +118,16 @@ export class ActionService {
     const input = validateActionProposal(raw, this.now());
     if (input.league_id !== this.config.leagueId) throw new Error('Action league does not match this ShotCaller instance');
     const mode = this.config.actionMode === 'live' && this.config.actionGatesVerified && this.config.actionEnabledClasses.includes(input.action_class) ? 'live' : 'shadow';
-    const base = { schema_version: 1, kind: 'action_intent', action_class: input.action_class, league_id: input.league_id, scoring_date: input.scoring_date, expires_at: input.expires_at, operation: input.operation, preconditions: input.preconditions, source_snapshot_ids: [...new Set(input.source_snapshot_ids)].sort(), execution_mode: mode, created_at: new Date(this.now()).toISOString() };
+    const createdAt = new Date(this.now()).toISOString();
+    const base = { schema_version: 1, kind: 'action_intent', action_class: input.action_class, league_id: input.league_id, scoring_date: input.scoring_date, expires_at: input.expires_at, operation: input.operation, preconditions: input.preconditions, source_snapshot_ids: [...new Set(input.source_snapshot_ids)].sort(), execution_mode: mode, created_at: createdAt, stored_at: createdAt };
     const intentDigest = canonicalDigest(base), id = `action-${intentDigest.slice(0, 32)}`;
+    await this.validateEvidence(base.source_snapshot_ids, 'source', id);
     return this.store.publish({ ...base, id, intent_digest: intentDigest, content_hash: intentDigest }, 'action-intents');
   }
   async authorize(id, input) {
     return this.serial(async () => {
       const intent = await this.store.read(id, 'action-intents');
-      if (intent.execution_mode === 'live' && (!this.config.actionGatesVerified || !this.config.actionEnabledClasses.includes(intent.action_class))) throw new Error('Live action class has not passed its promotion gates');
+      if (intent.execution_mode === 'live' && !this.liveConfigurationAllows(intent)) throw new Error('Live action class has not passed its promotion gates');
       const authorization = signAuthorization(intent, { ...input, authorized_at: new Date(this.now()).toISOString() }, this.config.actionSigningKey);
       const record = { schema_version: 1, kind: 'action_authorization', id: `authorization-${id.slice(7)}`, intent_id: id, stored_at: new Date(this.now()).toISOString(), authorization };
       record.content_hash = canonicalDigest(authorization);
@@ -97,19 +142,27 @@ export class ActionService {
   async prepare(id, input) {
     return this.serial(async () => {
       const { intent, authorization, control } = await this.package(id);
+      const evidence = await this.validateEvidence(input.before_evidence_ids, 'before', id);
       const preflight = preflightAction(intent, input.state, control, this.now());
-      if (!preflight.allowed) return this.receipt(intent, authorization, 'blocked', preflight, input.before_evidence_ids || []);
-      if (intent.execution_mode === 'shadow') return this.receipt(intent, authorization, 'shadowed', preflight, input.before_evidence_ids || []);
-      return this.receipt(intent, authorization, 'preflight_passed', preflight, input.before_evidence_ids || []);
+      const status = !preflight.allowed ? 'blocked' : intent.execution_mode === 'shadow' ? 'shadowed' : 'preflight_passed';
+      assertTransition(actionAttemptTransitions, 'proposed', status);
+      return this.receipt(intent, authorization, status, preflight, evidence);
     });
   }
   async arm(id, input) {
     return this.serial(async () => {
-      if (!exact(input, ['attempt_id'])) throw new Error('Invalid action arm request');
+      if (!exact(input, ['attempt_id', 'state', 'before_evidence_ids', 'observed_at']) || !isPlainObject(input.state)) throw new Error('Invalid action arm request');
       const { intent, authorization, control } = await this.package(id);
+      this.assertLiveConfiguration(intent);
       const attempt = await this.store.read(input.attempt_id, 'action-attempts');
-      if (attempt.intent_id !== id || attempt.status !== 'preflight_passed' || intent.execution_mode !== 'live') throw new Error('Action has not passed a live preflight');
-      if (control.stop_switch || control.human_takeover) return { status: 'blocked', intent_id: id, reason: control.stop_switch ? 'The action stop switch is active.' : 'Human takeover is active.' };
+      if (attempt.intent_id !== id || attempt.status !== 'preflight_passed') throw new Error('Action has not passed a live preflight');
+      const observedAt = this.validateFreshObservation(input.observed_at);
+      const evidence = await this.validateEvidence(input.before_evidence_ids, 'arm', id);
+      const preflight = { ...preflightAction(intent, input.state, control, this.now()), state_observed_at: observedAt };
+      if (!preflight.allowed) {
+        assertTransition(actionAttemptTransitions, attempt.status, 'blocked');
+        return this.receipt(intent, authorization, 'blocked', preflight, evidence, attempt.id, observedAt);
+      }
       await this.init();
       const nonceFile = join(this.root, 'consumed', `${authorization.nonce}.json`);
       try {
@@ -120,30 +173,51 @@ export class ActionService {
         if (error.code === 'EEXIST') return { status: 'reconcile_required', intent_id: id, reason: 'Authorization nonce was already consumed; read Yahoo state before any retry.' };
         throw error;
       }
-      return this.receipt(intent, authorization, 'prepared', attempt.preflight, attempt.before_evidence_ids);
+      assertTransition(actionAttemptTransitions, attempt.status, 'prepared');
+      return this.receipt(intent, authorization, 'prepared', preflight, evidence, attempt.id, observedAt);
     });
   }
-  async receipt(intent, authorization, status, preflight, evidenceIds) {
+  async receipt(intent, authorization, status, preflight, evidenceIds, previousAttemptId = null, evidenceObservedAt = null) {
     const id = `action-attempt-${randomUUID()}`;
-    const value = { schema_version: 1, kind: 'action_attempt', id, intent_id: intent.id, authorization_digest: authorization.digest, execution_mode: intent.execution_mode, status, preflight, before_evidence_ids: evidenceIds, after_evidence_ids: [], created_at: new Date(this.now()).toISOString(), requires_reconciliation: status === 'prepared' };
+    const createdAt = new Date(this.now()).toISOString();
+    const value = { schema_version: 1, kind: 'action_attempt', id, intent_id: intent.id, authorization_digest: authorization.digest, execution_mode: intent.execution_mode, status, preflight, before_evidence_ids: evidenceIds, after_evidence_ids: [], previous_attempt_id: previousAttemptId, evidence_observed_at: evidenceObservedAt, created_at: createdAt, stored_at: createdAt, requires_reconciliation: status === 'prepared' };
     value.content_hash = canonicalDigest(value);
     return this.store.publish(value, 'action-attempts');
+  }
+  async latestReadback(attemptId) {
+    let outcome = null;
+    try { outcome = await this.store.read(`outcome-${attemptId}`, 'action-outcomes'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!outcome) return null;
+    await this.init();
+    const rows = (await this.store.list('action-reconciliations')).filter(row => row.attempt_id === attemptId);
+    rows.sort((a, b) => a.recorded_at.localeCompare(b.recorded_at) || a.id.localeCompare(b.id));
+    return rows.at(-1) || outcome;
   }
   async readback(id, input) {
     return this.serial(async () => {
       if (!exact(input, ['attempt_id', 'outcome', 'before_evidence_ids', 'after_evidence_ids', 'visible_state']) || !['applied', 'blocked', 'ambiguous', 'partial', 'shadowed'].includes(input.outcome) || !Array.isArray(input.before_evidence_ids) || !Array.isArray(input.after_evidence_ids)) throw new Error('Invalid action readback');
       const [intent, attempt] = await Promise.all([this.store.read(id, 'action-intents'), this.store.read(input.attempt_id, 'action-attempts')]);
       if (attempt.intent_id !== id) throw new Error('Invalid action attempt binding');
-      if (attempt.status === 'shadowed' && input.outcome !== 'shadowed') throw new Error('Shadow actions cannot report a live mutation');
-      const value = { schema_version: 1, kind: 'action_outcome', id: `outcome-${input.attempt_id}`, intent_id: id, attempt_id: input.attempt_id, action_class: intent.action_class, execution_mode: intent.execution_mode, outcome: input.outcome, before_evidence_ids: input.before_evidence_ids, after_evidence_ids: input.after_evidence_ids, visible_state: input.visible_state, recorded_at: new Date(this.now()).toISOString(), requires_reconciliation: ['ambiguous', 'partial'].includes(input.outcome) };
+      const beforeEvidence = await this.validateEvidence(input.before_evidence_ids, 'readback-before', id);
+      const afterEvidence = await this.validateEvidence(input.after_evidence_ids, 'readback-after', id);
+      const readbackDigest = canonicalDigest(readbackFields({ ...input, before_evidence_ids: beforeEvidence, after_evidence_ids: afterEvidence }));
+      const previous = await this.latestReadback(input.attempt_id);
+      if (previous?.readback_digest === readbackDigest) return previous;
+      const from = previous?.outcome || attempt.status;
+      assertTransition(actionOutcomeTransitions, from, input.outcome);
+      const recordedAt = new Date(this.now()).toISOString();
+      const reconciliation = Boolean(previous);
+      const value = { schema_version: 1, kind: reconciliation ? 'action_reconciliation' : 'action_outcome', id: reconciliation ? `reconciliation-${canonicalDigest({ attempt_id: input.attempt_id, previous_id: previous.id, readback_digest: readbackDigest }).slice(0, 32)}` : `outcome-${input.attempt_id}`, intent_id: id, attempt_id: input.attempt_id, previous_record_id: previous?.id || null, action_class: intent.action_class, execution_mode: intent.execution_mode, outcome: input.outcome, before_evidence_ids: beforeEvidence, after_evidence_ids: afterEvidence, visible_state: input.visible_state, readback_digest: readbackDigest, recorded_at: recordedAt, stored_at: recordedAt, requires_reconciliation: ['ambiguous', 'partial'].includes(input.outcome) };
       value.content_hash = canonicalDigest(value);
-      return this.store.publish(value, 'action-outcomes');
+      return this.store.publish(value, reconciliation ? 'action-reconciliations' : 'action-outcomes');
     });
   }
   async dispatch(id) {
     const { intent, control } = await this.package(id);
     if (control.stop_switch || control.human_takeover) throw new Error('Action dispatch is stopped');
-    if (!this.config.actionGatesVerified || !this.config.boxesRunUrl || !this.config.boxesSecret || !this.config.boxesExecutorThreadId) throw new Error('Action executor gates or isolated thread are unavailable');
+    this.assertLiveConfiguration(intent);
+    if (!this.config.boxesRunUrl || !this.config.boxesSecret || !this.config.boxesExecutorThreadId) throw new Error('Action executor gates or isolated thread are unavailable');
     const response = await this.fetcher(this.config.boxesRunUrl, { method: 'POST', headers: { Authorization: `Bearer ${this.config.boxesSecret}`, 'Content-Type': 'application/json', 'Idempotency-Key': intent.intent_digest }, body: JSON.stringify({ prompt: `Process ShotCaller intent ${intent.id} using prompts/executor-bounded.md.`, target: { kind: 'existing_thread', threadId: this.config.boxesExecutorThreadId } }), signal: AbortSignal.timeout(30_000), redirect: 'error' });
     if (response.status !== 202) throw new Error('Action executor trigger refused');
     const result = await response.json();
@@ -151,7 +225,8 @@ export class ActionService {
     return { intent_id: id, status: 'accepted', execution_mode: intent.execution_mode };
   }
   async status() {
-    const [intents, authorizations, attempts, outcomes, control] = await Promise.all(['action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes'].map(folder => this.store.list(folder)).concat(this.control()));
-    return { mode: this.config.actionMode, gates_verified: this.config.actionGatesVerified, enabled_classes: this.config.actionEnabledClasses, control, intents, authorizations: authorizations.map(row => ({ id: row.id, intent_id: row.intent_id, stored_at: row.stored_at })), attempts, outcomes };
+    await this.init();
+    const [intents, authorizations, attempts, outcomes, reconciliations, control] = await Promise.all(['action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations'].map(folder => this.store.list(folder)).concat(this.control()));
+    return { mode: this.config.actionMode, gates_verified: this.config.actionGatesVerified, enabled_classes: this.config.actionEnabledClasses, control, intents, authorizations: authorizations.map(row => ({ id: row.id, intent_id: row.intent_id, stored_at: row.stored_at })), attempts, outcomes, reconciliations };
   }
 }

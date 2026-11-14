@@ -1,12 +1,8 @@
 import { canonicalDigest } from './store.mjs';
 import { categoryKeys } from './schema.mjs';
 import { unique } from './evaluate.mjs';
+import { categoryValue, missingCategories } from './categories.mjs';
 
-const categoryValue = (stats, category) => {
-  if (category === 'fg_pct') return stats?.fg_pct ?? (stats?.fga > 0 ? stats.fgm / stats.fga : null);
-  if (category === 'ft_pct') return stats?.ft_pct ?? (stats?.fta > 0 ? stats.ftm / stats.fta : null);
-  return category === 'stl' ? stats?.stl ?? stats?.st : stats?.[category];
-};
 const allPlay = matchups => {
   const teams = matchups.flatMap(row => row.teams || []);
   return teams.map(team => ({
@@ -17,27 +13,68 @@ const allPlay = matchups => {
       return [category, index < 0 ? null : index + 1];
     })),
     all_play: teams.filter(other => other.id !== team.id).reduce((record, other) => {
-      let won = 0, lost = 0, tied = 0;
+      let won = 0, lost = 0, tied = 0, compared = 0;
       for (const category of categoryKeys) {
         const own = categoryValue(team.stats, category), theirs = categoryValue(other.stats, category);
         if (!Number.isFinite(own) || !Number.isFinite(theirs)) continue;
+        compared++;
         if (own > theirs) won++; else if (own < theirs) lost++; else tied++;
       }
+      if (!compared) { record.incomplete++; return record; }
       if (won > lost) record.wins++; else if (won < lost) record.losses++; else record.ties++;
       return record;
-    }, { wins: 0, losses: 0, ties: 0 })
+    }, { wins: 0, losses: 0, ties: 0, incomplete: 0 })
   }));
 };
 
+const duplicates = values => [...new Set(values.filter((value, index) => values.indexOf(value) !== index))].sort();
+const sortedIds = values => values.filter(value => typeof value === 'string' && value).sort();
+const sameIds = (left, right) => left.length === right.length && left.every((value, index) => value === right[index]);
+
+function reportTopology(input) {
+  const expected = Array.isArray(input.frozen_matchup_topology) ? input.frozen_matchup_topology : [];
+  const expectedIds = expected.map(row => row?.id).filter(Boolean);
+  const actualIds = input.matchups.map(row => row?.id).filter(Boolean);
+  const issues = [];
+  if (!expected.length || typeof input.matchup_topology_source_id !== 'string' || !input.matchup_topology_source_id) issues.push('Frozen matchup topology and its source ID are required before the report can be final.');
+  if (expectedIds.length !== expected.length || duplicates(expectedIds).length) issues.push('Frozen matchup topology has missing or duplicate matchup IDs.');
+  if (duplicates(actualIds).length) issues.push('Observed matchups contain duplicate IDs.');
+  if (!sameIds(sortedIds(expectedIds), sortedIds(actualIds))) issues.push('Observed matchup IDs do not exactly match the frozen topology.');
+  const expectedTeams = expected.flatMap(row => Array.isArray(row?.team_ids) ? row.team_ids : []);
+  if (expected.some(row => !Array.isArray(row?.team_ids) || row.team_ids.length !== 2 || new Set(row.team_ids).size !== 2) || duplicates(expectedTeams).length) issues.push('Frozen matchup topology must assign each team to one two-team matchup.');
+  const actualById = new Map(input.matchups.map(row => [row?.id, row]));
+  for (const matchup of expected) {
+    const actual = actualById.get(matchup?.id);
+    if (!actual) continue;
+    const actualTeams = sortedIds((actual.teams || []).map(row => row?.id));
+    if (duplicates(actualTeams).length || !sameIds(sortedIds(matchup.team_ids || []), actualTeams)) issues.push(`Observed teams do not match frozen matchup ${matchup.id}.`);
+  }
+  if (input.matchups.some(row => row?.status !== 'final')) issues.push('One or more observed matchups are not final.');
+  return { complete: issues.length === 0, expected_matchup_ids: unique(expectedIds), observed_matchup_ids: unique(actualIds), issues };
+}
+
+function categoryCoverage(matchups) {
+  const missing = matchups.flatMap(matchup => (matchup.teams || []).flatMap(team => missingCategories(team.stats).map(category => ({ matchup_id: matchup.id, team_id: team.id, category }))));
+  return { complete: missing.length === 0, expected_observations: matchups.reduce((sum, row) => sum + (row.teams?.length || 0), 0) * categoryKeys.length, missing };
+}
+
+const appliedOutcome = outcome => outcome?.kind === 'action_outcome' && outcome?.execution_mode === 'live' && outcome?.outcome === 'applied' && !outcome?.requires_reconciliation && outcome?.id && outcome?.intent_id && outcome?.attempt_id && Array.isArray(outcome?.before_evidence_ids) && outcome.before_evidence_ids.length > 0 && Array.isArray(outcome?.after_evidence_ids) && outcome.after_evidence_ids.length > 0;
+
 export function buildWeeklyReport(input) {
   if (!input?.league_id || !input?.season || !Number.isInteger(input.week) || !Array.isArray(input.matchups)) throw new Error('Invalid weekly report input');
-  const expected = input.expected_matchups ?? 5;
-  const final = input.matchups.length === expected && input.matchups.every(row => row.status === 'final');
-  const actionsByDecision = new Map((input.actions || []).filter(row => row.status === 'verified' && row.decision_id).map(row => [row.decision_id, row]));
+  const topology = reportTopology(input);
+  const categories = categoryCoverage(input.matchups);
+  const trustedOutcomes = input.trusted_action_outcomes || [];
+  const outcomeDuplicates = new Set(duplicates(trustedOutcomes.map(row => row?.id).filter(Boolean)));
+  const outcomes = new Map(trustedOutcomes.filter(row => appliedOutcome(row) && !outcomeDuplicates.has(row.id)).map(row => [row.id, row]));
+  const trustedLinks = input.trusted_decision_action_links || [];
+  const duplicatedDecisions = new Set(duplicates(trustedLinks.map(row => row?.decision_id).filter(Boolean)));
+  const duplicatedOutcomes = new Set(duplicates(trustedLinks.map(row => row?.outcome_id).filter(Boolean)));
+  const links = new Map(trustedLinks.filter(row => row?.decision_id && row?.intent_id && row?.outcome_id && !duplicatedDecisions.has(row.decision_id) && !duplicatedOutcomes.has(row.outcome_id)).map(row => [row.decision_id, row]));
   const verified = [], unexecuted = [];
   for (const decision of input.decisions || []) {
-    const action = actionsByDecision.get(decision.id);
-    if (action) verified.push({ decision_id: decision.id, action_id: action.id, status: 'verified' });
+    const link = links.get(decision.id), outcome = outcomes.get(link?.outcome_id);
+    if (link && outcome && link.intent_id === outcome.intent_id) verified.push({ decision_id: decision.id, intent_id: outcome.intent_id, outcome_id: outcome.id, attempt_id: outcome.attempt_id, status: 'applied' });
     else unexecuted.push({ id: decision.id, task: decision.task, status: 'advice_only' });
   }
   const lostDays = (input.lineup_days || []).map(row => ({ date: row.date, players: row.benched_with_game || [], count: (row.benched_with_game || []).length, source_snapshot_ids: row.source_snapshot_ids || [] })).filter(row => row.count);
@@ -45,22 +82,28 @@ export function buildWeeklyReport(input) {
   const sourceSnapshotIds = unique([
     ...input.matchups.flatMap(row => row.source_snapshot_ids || []),
     ...(input.evaluations || []).flatMap(row => row.source_snapshot_ids || row.evaluation?.source_snapshot_ids || []),
-    ...(input.actions || []).flatMap(row => row.source_snapshot_ids || []),
+    ...(input.trusted_action_outcomes || []).flatMap(row => [...(row.before_evidence_ids || []), ...(row.after_evidence_ids || [])]),
     ...(input.lineup_days || []).flatMap(row => row.source_snapshot_ids || []),
     ...(input.recap_decision?.snapshot_ids || [])
   ]);
+  const caveats = [...topology.issues];
+  if (!categories.complete) caveats.push(`${categories.missing.length} category observations are missing; percentage categories require finite makes and attempts.`);
+  const status = !topology.complete ? 'provisional' : categories.complete ? 'final' : 'partial';
   const report = {
-    schema_version: 1, kind: 'weekly_report', status: final ? 'final' : 'provisional',
+    schema_version: 1, kind: 'weekly_report', status,
     league_id: String(input.league_id), season: String(input.season), week: input.week,
     created_at: input.created_at || new Date().toISOString(), correction_of: input.correction_of || null,
-    expected_matchups: expected, finalized_matchups: input.matchups.filter(row => row.status === 'final').length,
+    season_history_ids: unique(input.season_history_ids || []), previous_report_id: input.previous_report_id || null,
+    matchup_topology_source_id: input.matchup_topology_source_id || null,
+    expected_matchups: topology.expected_matchup_ids.length, finalized_matchups: input.matchups.filter(row => row.status === 'final').length,
+    topology_coverage: topology, category_coverage: categories,
     source_snapshot_ids: sourceSnapshotIds, matchups: structuredClone(input.matchups),
     evaluation_ids: (input.evaluations || []).map(row => row.id).filter(Boolean), all_play: allPlay(input.matchups.filter(row => row.status === 'final')),
     lost_starts: { total: lostDays.reduce((sum, row) => sum + row.count, 0), days: lostDays },
     decision_review: { verified, unexecuted }, recap,
-    caveats: final ? [] : [`Final post-mortem requires all ${expected === 5 ? 'five (5)' : expected} finalized matchups; ${input.matchups.filter(row => row.status === 'final').length} are final.`]
+    caveats
   };
-  report.input_hash = canonicalDigest({ league_id: report.league_id, season: report.season, week: report.week, correction_of: report.correction_of, source_snapshot_ids: report.source_snapshot_ids, matchups: report.matchups, evaluation_ids: report.evaluation_ids });
+  report.input_hash = canonicalDigest({ league_id: report.league_id, season: report.season, week: report.week, correction_of: report.correction_of, season_history_ids: report.season_history_ids, previous_report_id: report.previous_report_id, matchup_topology_source_id: report.matchup_topology_source_id, source_snapshot_ids: report.source_snapshot_ids, matchups: report.matchups, topology_coverage: report.topology_coverage, category_coverage: report.category_coverage, evaluation_ids: report.evaluation_ids, verified_outcomes: verified.map(row => row.outcome_id) });
   return report;
 }
 
