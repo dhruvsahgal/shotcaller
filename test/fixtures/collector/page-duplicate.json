@@ -1,0 +1,28 @@
+{
+  "url": "https://basketball.fantasysports.yahoo.com/nba/999/7",
+  "title": "Synthetic Team | Fantasy Basketball",
+  "observed_at": "2026-11-14T10:18:30Z",
+  "text": "Synthetic League Synthetic Team Week 5 Roster duplicate row",
+  "ready": true,
+  "evidence_refs": ["evidence/duplicate-roster.txt#table", "evidence/duplicate-roster.png"],
+  "checkpoint": { "kind": "team_roster", "league_id": "999", "team_id": "7", "scoring_period_key": "5" },
+  "tables": [{
+    "locator": "table#roster",
+    "headers": ["Slot", "Player", "NBA Team", "Eligibility", "Injury"],
+    "visible_total": 2,
+    "rows": [
+      {
+        "locator": "table#roster > tbody > tr:nth-child(1)",
+        "cells": ["PG", "Avery Example", "AAA", "PG, SG", null],
+        "links": [{ "text": "Avery Example", "href": "https://sports.yahoo.com/nba/players/101/" }],
+        "evidence_refs": ["evidence/duplicate-roster.txt#row-1", "evidence/duplicate-roster.png#row-1"]
+      },
+      {
+        "locator": "table#roster > tbody > tr:nth-child(2)",
+        "cells": ["BN", "Avery Example", "AAA", "PG, SG", null],
+        "links": [{ "text": "Avery Example", "href": "https://sports.yahoo.com/nba/players/101/" }],
+        "evidence_refs": ["evidence/duplicate-roster.txt#row-2", "evidence/duplicate-roster.png#row-2"]
+      }
+    ]
+  }]
+}

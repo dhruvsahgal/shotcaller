@@ -13,13 +13,14 @@ const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const evidenceReference = /^evidence\/[A-Za-z0-9._/-]+(?:#[A-Za-z0-9._:-]+)?$/;
 const allowedSlotGroups = new Set(['active', 'bench', 'il']);
 const loginChallenges = new Set(['login', 'passkey', 'consent', 'challenge']);
+const rosterHeaders = ['Slot', 'Player', 'NBA Team', 'Eligibility', 'Injury'];
 
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-function exactKeys(value, keys, label) {
+function exactKeys(value, keys, label, optional = []) {
   assert(plainObject(value), `Invalid ${label}`);
-  const expected = new Set(keys);
+  const expected = new Set([...keys, ...optional]);
   for (const key of Object.keys(value)) assert(expected.has(key), `Unexpected ${label} key: ${key}`);
   for (const key of keys) assert(Object.hasOwn(value, key), `Missing ${label} key: ${key}`);
 }
@@ -101,9 +102,9 @@ function validateIdentity(value, label, allowNull) {
   assert(typeof value === 'string' && identifier.test(value), `Invalid ${label}`);
 }
 
-function validateRosterRow(row, index, status, missingFields) {
+function validateRosterRow(row, index, status, missingFields, requireLocator = false) {
   const label = `roster[${index}]`;
-  exactKeys(row, ['player_id', 'player_url', 'name', 'nba_team', 'eligibility', 'slot', 'injury', 'evidence_refs'], label);
+  exactKeys(row, ['player_id', 'player_url', 'name', 'nba_team', 'eligibility', 'slot', 'injury', 'evidence_refs'], label, ['source_locator']);
   const mayBeUnknown = status === 'partial';
   validateIdentity(row.player_id, `${label}.player_id`, true);
   if (row.player_url !== null) {
@@ -128,10 +129,56 @@ function validateRosterRow(row, index, status, missingFields) {
   } else assert(mayBeUnknown && missingFields.includes(`${label}.slot`), `Invalid ${label}.slot`);
   nullableText(row.injury, `${label}.injury`, { max: 64 });
   validateEvidenceReferences(row.evidence_refs, `${label}.evidence_refs`);
+  if (requireLocator) nullableText(row.source_locator, `${label}.source_locator`, { required: true, max: 500 });
+  if (requireLocator && status === 'complete') {
+    assert(row.evidence_refs.some(ref => /\.txt(?:#|$)/i.test(ref)) && row.evidence_refs.some(ref => /\.(?:png|jpe?g|webp)(?:#|$)/i.test(ref)), `${label} requires text and screenshot evidence`);
+  }
+}
+
+function validateExtraction(extraction, input, allowedPages) {
+  exactKeys(extraction, ['method', 'headers', 'displayed_total', 'source_visible_rows', 'row_locators', 'source_hash', 'page_inventory'], 'extraction');
+  assert(extraction.method === 'structured_text', 'Invalid extraction method');
+  assert(Array.isArray(extraction.headers) && extraction.headers.length <= 30, 'Invalid extraction headers');
+  extraction.headers.forEach(header => nullableText(header, 'extraction header', { required: true, max: 80 }));
+  integerOrNull(extraction.displayed_total, 'extraction.displayed_total');
+  integerOrNull(extraction.source_visible_rows, 'extraction.source_visible_rows');
+  assert(Array.isArray(extraction.row_locators) && extraction.row_locators.length <= 30 && new Set(extraction.row_locators).size === extraction.row_locators.length, 'Invalid extraction row locators');
+  extraction.row_locators.forEach(locator => nullableText(locator, 'extraction row locator', { required: true, max: 500 }));
+  assert(/^[a-f0-9]{64}$/.test(extraction.source_hash), 'Invalid extraction source hash');
+  assert(Array.isArray(extraction.page_inventory) && extraction.page_inventory.length > 0 && extraction.page_inventory.length <= 50, 'Invalid extraction page inventory');
+  for (const page of extraction.page_inventory) {
+    exactKeys(page, ['url', 'checkpoint', 'evidence_refs', 'source_hash'], 'extraction page inventory');
+    validateSourcePage(page.url, allowedPages);
+    assert(plainObject(page.checkpoint), 'Invalid extraction checkpoint');
+    assert(page.checkpoint.league_id === input.league.id, 'Extraction checkpoint league identity mismatch');
+    assert(page.checkpoint.team_id === input.team.id, 'Extraction checkpoint team identity mismatch');
+    if (input.status === 'needs_login') {
+      assert(loginChallenges.has(page.checkpoint.kind), 'Invalid login extraction checkpoint');
+    } else {
+      assert(page.checkpoint.kind === 'team_roster', 'Invalid roster extraction checkpoint');
+      assert(page.checkpoint.scoring_period_key === input.scoring_period.key, 'Extraction checkpoint scoring period mismatch');
+    }
+    validateEvidenceReferences(page.evidence_refs, 'extraction page evidence_refs');
+    assert(/^[a-f0-9]{64}$/.test(page.source_hash), 'Invalid extraction page source hash');
+  }
+  assert(extraction.page_inventory.at(-1).source_hash === extraction.source_hash, 'Extraction source hash does not match terminal page inventory');
+  if (input.status === 'needs_login') {
+    assert(extraction.source_visible_rows === null && extraction.row_locators.length === 0, 'Login extraction cannot claim roster rows');
+    return;
+  }
+  assert(extraction.source_visible_rows === extraction.row_locators.length, 'Source visible row reconciliation failed');
+  assert(input.coverage.visible_rows === extraction.source_visible_rows, 'Coverage does not match source visible rows');
+  const extractedLocators = input.roster.map(row => row.source_locator);
+  assert(new Set(extractedLocators).size === extractedLocators.length, 'Duplicate extracted row locator');
+  extractedLocators.forEach(locator => assert(extraction.row_locators.includes(locator), 'Extracted row locator is absent from source rows'));
+  if (input.status === 'complete') {
+    assert(extraction.headers.length === rosterHeaders.length && extraction.headers.every((header, index) => header === rosterHeaders[index]), 'Complete extraction requires exact roster headers');
+    assert(extraction.displayed_total === extraction.source_visible_rows, 'Displayed roster total does not reconcile with source rows');
+  }
 }
 
 export function validateCollectorOutput(input) {
-  exactKeys(input, outputKeys, 'collector output');
+  exactKeys(input, outputKeys, 'collector output', ['extraction']);
   assert(input.contract_version === 1, 'Unsupported collector contract version');
   assert(input.collector_mode === 'observation_only', 'Collector mode must be observation_only');
   assert(input.decision_output === false, 'Collector cannot produce decisions');
@@ -183,7 +230,8 @@ export function validateCollectorOutput(input) {
 
   assert(Array.isArray(input.roster) && input.roster.length <= 30, 'Invalid roster');
   assert(input.coverage.extracted_rows === input.roster.length, 'Extracted row count does not match roster');
-  input.roster.forEach((row, index) => validateRosterRow(row, index, input.status, input.coverage.missing_fields));
+  input.roster.forEach((row, index) => validateRosterRow(row, index, input.status, input.coverage.missing_fields, input.extraction !== undefined));
+  if (input.extraction !== undefined) validateExtraction(input.extraction, input, allowedPages);
 
   exactKeys(input.login, ['required', 'challenge'], 'login');
   assert(typeof input.login.required === 'boolean', 'Invalid login.required');
@@ -195,6 +243,8 @@ export function validateCollectorOutput(input) {
     assert(input.login.required === false && input.login.challenge === null, 'Complete output cannot require login');
     assert(input.coverage.visible_rows === input.roster.length && input.coverage.missing_rows === 0 && input.coverage.missing_fields.length === 0 && input.coverage.row_reconciled, 'Complete output must reconcile every visible row and field');
     assert(input.warnings.length === 0, 'Complete output cannot contain coverage warnings');
+    const identities = input.roster.map(row => row.player_id ?? row.player_url);
+    assert(new Set(identities).size === identities.length, 'Complete output cannot contain duplicate roster identities');
   } else if (input.status === 'partial') {
     assert(input.login.required === false && input.login.challenge === null, 'Use needs_login for authentication interruptions');
     assert(input.coverage.visible_rows !== null && input.coverage.missing_rows !== null, 'Partial roster must report visible and missing row counts when the table was visible');

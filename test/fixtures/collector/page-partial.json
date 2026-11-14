@@ -1,0 +1,28 @@
+{
+  "url": "https://basketball.fantasysports.yahoo.com/nba/999/7",
+  "title": "Synthetic Team | Fantasy Basketball",
+  "observed_at": "2026-11-14T10:16:30Z",
+  "text": "Synthetic League Synthetic Team Week 5 Roster 2 players; one clipped team cell",
+  "ready": true,
+  "evidence_refs": ["evidence/partial-roster.txt#table", "evidence/partial-roster.png"],
+  "checkpoint": { "kind": "team_roster", "league_id": "999", "team_id": "7", "scoring_period_key": "5" },
+  "tables": [{
+    "locator": "table#roster",
+    "headers": ["Slot", "Player", "NBA Team", "Eligibility", "Injury"],
+    "visible_total": 2,
+    "rows": [
+      {
+        "locator": "table#roster > tbody > tr:nth-child(1)",
+        "cells": ["PG", "Avery Example", "AAA", "PG, SG", null],
+        "links": [{ "text": "Avery Example", "href": "https://sports.yahoo.com/nba/players/101/" }],
+        "evidence_refs": ["evidence/partial-roster.txt#row-1", "evidence/partial-roster.png#row-1"]
+      },
+      {
+        "locator": "table#roster > tbody > tr:nth-child(2)",
+        "cells": ["BN", "Blake Sample", null, "SF, PF", "GTD"],
+        "links": [{ "text": "Blake Sample", "href": "https://sports.yahoo.com/nba/players/202/" }],
+        "evidence_refs": ["evidence/partial-roster.txt#row-2", "evidence/partial-roster.png#row-2"]
+      }
+    ]
+  }]
+}

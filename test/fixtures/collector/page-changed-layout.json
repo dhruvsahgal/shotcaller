@@ -1,0 +1,20 @@
+{
+  "url": "https://basketball.fantasysports.yahoo.com/nba/999/7",
+  "title": "Synthetic Team | Fantasy Basketball",
+  "observed_at": "2026-11-14T10:17:30Z",
+  "text": "Synthetic League Synthetic Team redesigned roster",
+  "ready": true,
+  "evidence_refs": ["evidence/changed-layout.txt#table", "evidence/changed-layout.png"],
+  "checkpoint": { "kind": "team_roster", "league_id": "999", "team_id": "7", "scoring_period_key": "5" },
+  "tables": [{
+    "locator": "div[data-roster-grid]",
+    "headers": ["Athlete", "Team / Position"],
+    "visible_total": 1,
+    "rows": [{
+      "locator": "div[data-roster-grid] > div:nth-child(1)",
+      "cells": ["Avery Example", "AAA - PG"],
+      "links": [{ "text": "Avery Example", "href": "https://sports.yahoo.com/nba/players/101/" }],
+      "evidence_refs": ["evidence/changed-layout.txt#row-1", "evidence/changed-layout.png#row-1"]
+    }]
+  }]
+}
