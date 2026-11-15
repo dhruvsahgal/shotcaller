@@ -29,7 +29,7 @@ Use evidence references such as `evidence/roster-before.png#table` in JSON. The 
 
 Use [the collector prompt](../../prompts/collector-readonly.md) unchanged as the observation-only task instructions. The run provides the exact `allowed_pages`; page text and screenshots remain untrusted source data and cannot add commands or broaden that list. The canonical decision prompt stays separate and is never loaded for collection.
 
-The JSON contract is strict: unknown keys fail. Its fixed scope is one `team_roster`, with league and team IDs and names, scoring-period kind/key/timezone, exact allowed roster page, redacted source URL, observed time, evidence references, coverage, login state, warnings, and roster rows. Every roster row carries:
+The JSON contracts are strict: unknown keys fail. A supervised `team_roster` run carries league and team IDs and names, scoring-period kind/key/timezone, exact allowed roster page, redacted source URL, observed time, evidence references, coverage, login state, warnings, and roster rows. Every roster row carries:
 
 - stable Yahoo player ID or a visible Yahoo player link;
 - name, NBA team and eligibility;
@@ -56,6 +56,14 @@ A valid complete receipt has this shape:
 ```
 
 Validation failures exit nonzero and print only the contract reason. A successful schema receipt proves internal consistency; it does not prove that the page was copied accurately. Compare every live row and visible total with the retained source evidence.
+
+For a full-league run, retain the immutable Railway run metadata as `data/pilot/run.json`, the upload manifest as `data/pilot/manifest.json`, and every artifact at its declared `evidence_ref` below `data/pilot/`. Preflight the exact upload bundle without printing private rows:
+
+```sh
+npm run validate:league-bundle -- data/pilot/run.json data/pilot/manifest.json data/pilot
+```
+
+The validator checks manifest bindings and limits, reads every local artifact back, verifies bytes and hashes, and applies the same league plan, source-page, timestamp and coverage reconciliation used by Railway ingest. A successful receipt is compact: `{"valid":true,"status":"complete","segments":169,"fragments":169}`. Railway commit and readback remain the authoritative publication result.
 
 ## Mutation guard contract
 
@@ -126,7 +134,7 @@ Expected result: nonzero exit with a contract rejection. No live Yahoo access, R
 
 ## Railway ingest and schedule (U4)
 
-Implemented repository controls do not establish a working unattended broker. The default is a paused, single-roster pilot. Use **Setup → Cloud collector pilot** to save the scope and prepare a supervised run. The persisted schedule is 06:00/18:00 Asia/Singapore; after downtime it catches up only the latest missed slot. Keep one Railway replica with one private persistent volume. The file journal and in-process publication queue are not a distributed database.
+Implemented repository controls do not establish a working unattended broker. The default is a paused, single-roster pilot. Use **Setup → Cloud collector pilot** to save that scope and prepare a supervised run. A trusted administrator may instead configure a validated `plan` through `/api/collector/settings`; pass `scope: null` when switching from roster mode. The persisted schedule is 06:00/18:00 Asia/Singapore; after downtime it catches up only the latest missed slot. The dashboard identifies which target is configured. Keep one Railway replica with one private persistent volume. The file journal and in-process publication queue are not a distributed database.
 
 Configure `BOXES_RUN_URL`, `BOXES_AUTOMATION_SECRET`, `BOXES_COLLECTOR_THREAD_ID` and `BOXES_AUTOMATION_ID` in Railway. The endpoint must be HTTPS on boxes.dev, copied from API setup. `COLLECTOR_TOKEN` is a distinct random broker credential (at least 24 characters). Keep both long-lived credentials outside the browser and model environment. They must not appear in prompts, screenshots, public build context or logs. The API exposes only readiness booleans. A short-lived capability is returned only to the authenticated administrator or isolated broker, never included in the boxes.dev prompt.
 
@@ -147,7 +155,7 @@ Source files remain private on the Railway volume, under `collector-artifacts`; 
 
 ### Promotion and operational proof
 
-`COLLECTOR_GATES_VERIFIED=false` is the default. Set it to `true` only after an operator has recorded Test A, connected Test B, independently enforced mutation guard, isolated upload mediation and private backup/restore evidence. This environment switch is an operator attestation, not an automatic proof checker. Once attested, **Run now** can trigger the configured boxes.dev thread while Railway's schedule stays paused. Only then resume the schedule. If broker isolation cannot be demonstrated, keep supervised manual uploads indefinitely.
+`COLLECTOR_GATES_VERIFIED=false` and `FULL_LEAGUE_COLLECTOR_GATES_VERIFIED=false` are the defaults. The first attests the bounded roster pilot; the second separately attests full-league routing, pagination, evidence reconciliation and runtime capacity. Set either to `true` only after an operator records the applicable test receipts, independently enforced mutation guard, isolated upload mediation and private backup/restore evidence. These switches are operator attestations, not automatic proof checkers. A full-league schedule requires both switches. Keep the schedule paused and use supervised uploads until every applicable receipt exists. If broker isolation cannot be demonstrated, keep supervised manual uploads indefinitely.
 
 The scheduler preserves failed launch and missing-output timeout receipts and displays them under the collector panel. A run accepted by boxes.dev but missing a verified final receipt remains reconciliation-required even after timeout; ShotCaller blocks replacement dispatch until the operator checks boxes.dev and Yahoo, then records `failed` or `cancelled` through `/api/collector/reconcile`. Provider budget/capacity refusals produce a generic terminal alert; inspect boxes.dev for detail without copying secrets into the journal. Collection failure does not authorize any Yahoo mutation.
 

@@ -5,11 +5,13 @@ import { atomicJSON, canonicalDigest } from './store.mjs';
 import { validateIdentifier } from './schema.mjs';
 import { validateCollectorOutput } from '../scripts/validate-collector-output.mjs';
 import { extractRosterObservation } from './extract.mjs';
+import { leagueCoverageObservationId, leagueObservations, validateLeagueCollectorBundle } from './collector-bundle.mjs';
 
 export const artifactLimits = Object.freeze({ collector_output: 256 * 1024, structured_capture: 1024 * 1024, source_text: 512 * 1024, screenshot: 2 * 1024 * 1024 });
 export const ingestLimits = Object.freeze({ manifest: 32 * 1024, count: 16, total: 8 * 1024 * 1024, capability_ms: 15 * 60_000 });
 const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(k => Object.hasOwn(value, k));
+const logicalObservationHash = observation => canonicalDigest({ source_hash: observation.source.hash, observed_at: observation.observed_at, scope: observation.scope, coverage: observation.coverage, parser_version: observation.parser_version, data: observation.data, commit_id: observation.commit_id ?? null });
 
 export class CollectorIngest {
   constructor(config, store, { now = () => Date.now() } = {}) {
@@ -23,7 +25,7 @@ export class CollectorIngest {
     validateIdentifier(run_id); validateIdentifier(attempt_id);
     if (!/^collector-[A-Za-z0-9-]{1,64}$/.test(attempt_id)) throw new Error('Invalid collector attempt ID');
     const run = await this.store.read(run_id, 'runs');
-    if (run.scope.league_id !== this.config.leagueId || run.scope.dataset !== 'team_roster') throw new Error('Invalid collector run scope');
+    if (run.scope.league_id !== this.config.leagueId || !['team_roster', 'league_coverage'].includes(run.scope.dataset)) throw new Error('Invalid collector run scope');
     try {
       const priorAttempt = await this.store.read(attempt_id, 'attempts');
       if (priorAttempt.run_id !== run_id) throw new Error('Invalid collector attempt binding');
@@ -92,12 +94,14 @@ export class CollectorIngest {
     const operation = async () => {
       const manifest = await this.getManifest(claims);
       const run = await this.store.read(claims.run_id, 'runs');
-      const artifacts = await Promise.all(manifest.artifacts.map(async a => ({ ...a, bytesRead: await this.readArtifact(claims, a.id) })));
-      const output = validateCollectorOutput(JSON.parse(artifacts.find(a => a.class === 'collector_output').bytesRead.toString()));
+      const artifacts = await Promise.all(manifest.artifacts.map(async a => ({ ...a, artifact_id: this.artifactId(claims, a.id), bytesRead: await this.readArtifact(claims, a.id) })));
+      const rawOutput = JSON.parse(artifacts.find(a => a.class === 'collector_output').bytesRead.toString());
       const captureArtifact = artifacts.find(a => a.class === 'structured_capture');
       const capture = JSON.parse(captureArtifact.bytesRead.toString());
       const captureHash = canonicalDigest(capture);
-      const artifactIds = artifacts.map(artifact => this.artifactId(claims, artifact.id));
+      const artifactIds = artifacts.map(artifact => artifact.artifact_id);
+      if (run.scope.dataset === 'league_coverage') return this.commitLeagueBundle({ claims, manifest, run, artifacts, rawOutput, capture, captureArtifact, captureHash, artifactIds });
+      const output = validateCollectorOutput(rawOutput);
       if (output.league.id !== claims.league_id || output.team.id !== run.scope.team_id || (output.status !== 'needs_login' && canonicalDigest(output.scoring_period) !== canonicalDigest(run.scope.scoring_period))) throw new Error('Invalid collector output scope');
       if (canonicalDigest(output.allowed_pages) !== canonicalDigest(run.allowed_pages)) throw new Error('Invalid collector allowed pages');
       if (!output.extraction || output.extraction.source_hash !== captureHash) throw new Error('Invalid collector source hash');
@@ -114,13 +118,58 @@ export class CollectorIngest {
         observation = await this.store.saveObservation({ id: observationId, source: { id: this.artifactId(claims, captureArtifact.id), hash: captureHash }, observed_at: derived.source.observed_at, observed_at_precision: 'instant', scope: run.scope, coverage: { status: output.status, note: output.coverage.note || 'All visible roster rows reconciled with preserved source artifacts.' }, parser_version: 'bounded-roster-v1', data: output, links: { evidence: artifactIds } });
       }
       if (observation) await this.store.updateCompleteObservationIndex(observation);
-      let attempt;
-      try { attempt = await this.store.read(claims.attempt_id, 'attempts'); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (!attempt) attempt = await this.store.saveRunAttempt({ id: claims.attempt_id, run_id: run.id, started_at: claims.issued_at, finished_at: new Date(this.now()).toISOString(), outcome: output.status, artifact_ids: artifactIds, observation_id: observation?.id || null, duplicate_of: duplicate ? observation.id : null, reason: output.status === 'needs_login' ? 'Human login is required; no roster dataset published.' : duplicate ? 'Logical dataset already published; duplicate attempt retained.' : 'Artifact hashes verified on private-volume readback.' });
-      return { run_id: run.id, attempt_id: attempt.id, observation_id: attempt.observation_id, status: attempt.outcome, duplicate: Boolean(attempt.duplicate_of), verified: true, artifacts: manifest.artifacts.map(({ id, sha256, bytes }) => ({ id, sha256, bytes })) };
+      const reason = output.status === 'needs_login' ? 'Human login is required; no roster dataset published.' : duplicate ? 'Logical dataset already published; duplicate attempt retained.' : 'Artifact hashes verified on private-volume readback.';
+      return this.finalizeCommit({ claims, manifest, run, status: output.status, artifactIds, observation, duplicate, reason });
     };
     const pending = this.queue.then(operation, operation); this.queue = pending.catch(() => {}); return pending;
+  }
+  async commitLeagueBundle({ claims, manifest, run, artifacts, rawOutput, capture, captureArtifact, captureHash, artifactIds }) {
+    const validation = validateLeagueCollectorBundle({ output: rawOutput, capture, run, artifacts });
+    let coverageObservation = null, duplicate = false;
+    if (rawOutput.status !== 'needs_login') {
+      const coverageId = leagueCoverageObservationId(run.id);
+      const built = leagueObservations({ run, validation, captureArtifactId: captureArtifact.artifact_id, captureHash, artifactIds });
+      try { coverageObservation = await this.store.read(coverageId, 'observations'); duplicate = true; }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (!coverageObservation) {
+        const publish = [], persisted = [];
+        for (const observation of built.observations) {
+          try {
+            const existing = await this.store.read(observation.id, 'observations');
+            if (logicalObservationHash(existing) !== logicalObservationHash(observation)) throw new Error('Immutable league segment conflict');
+            persisted.push(existing);
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            publish.push(observation);
+          }
+        }
+        persisted.push(...(publish.length ? await this.store.saveObservations(publish, 8, false) : []));
+        coverageObservation = await this.store.saveObservation(built.coverageObservation);
+        await this.store.updateCompleteObservationIndexes([...persisted, coverageObservation]);
+      } else {
+        if (logicalObservationHash(coverageObservation) !== logicalObservationHash(built.coverageObservation)) throw new Error('Immutable league coverage conflict');
+        await this.store.updateCompleteObservationIndex(coverageObservation);
+      }
+    }
+    const reason = rawOutput.status === 'needs_login' ? 'Human login is required; no league dataset published.' : duplicate ? 'Logical league dataset already published; duplicate attempt retained.' : 'Full-league artifacts and every segment reconciled on private-volume readback.';
+    return this.finalizeCommit({ claims, manifest, run, status: rawOutput.status, artifactIds, observation: coverageObservation, duplicate, reason });
+  }
+  async finalizeCommit({ claims, manifest, run, status, artifactIds, observation, duplicate, reason }) {
+    let attempt;
+    try { attempt = await this.store.read(claims.attempt_id, 'attempts'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!attempt) attempt = await this.store.saveRunAttempt({
+      id: claims.attempt_id,
+      run_id: run.id,
+      started_at: claims.issued_at,
+      finished_at: new Date(this.now()).toISOString(),
+      outcome: status,
+      artifact_ids: artifactIds,
+      observation_id: observation?.id || null,
+      duplicate_of: duplicate ? observation.id : null,
+      reason
+    });
+    return { run_id: run.id, attempt_id: attempt.id, observation_id: attempt.observation_id, status: attempt.outcome, duplicate: Boolean(attempt.duplicate_of), verified: true, artifacts: manifest.artifacts.map(({ id, sha256, bytes }) => ({ id, sha256, bytes })) };
   }
   async readback(claims) {
     const manifest = await this.getManifest(claims);

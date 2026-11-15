@@ -50,7 +50,8 @@ async function assertLinks(root) {
     if (error.code === 'ENOENT') return;
     throw error;
   }
-  for (const pointer of Object.values(index.complete || {})) {
+  const observationPointers = new Map([...Object.values(index.complete || {}), ...Object.values(index.latest || {})].map(pointer => [pointer.id, pointer]));
+  for (const pointer of observationPointers.values()) {
     try { await stat(join(root, 'observations', pointer.id, 'snapshot.json')); }
     catch (error) { if (error.code === 'ENOENT') throw new Error('Archive index references missing record'); throw error; }
   }

@@ -188,7 +188,7 @@ export async function createApp(config, options = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const promptRead = promptInfo(config.promptPath).then(p => ({ hash: p.hash, text: p.text, ready: true })).catch(() => ({ ready: false, error: 'Master prompt unavailable; decisions disabled' }));
-        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage] = await Promise.all([store.list(), store.list('observations'), store.list('decisions'), store.recent('forecasts', 25), store.recent('optimizations', 1), store.recent('evaluations', 25), store.recent('reports', 25), store.latestForecast(), store.latest(), promptRead, actions.status({ limit: 10 }), usage.status()]);
+        const [records, observations, decisions, forecasts, optimizations, evaluations, reports, latestForecast, latest, prompt, actionState, modelUsage] = await Promise.all([store.list(), store.currentObservations(), store.list('decisions'), store.recent('forecasts', 25), store.recent('optimizations', 1), store.recent('evaluations', 25), store.recent('reports', 25), store.latestForecast(), store.latest(), promptRead, actions.status({ limit: 10 }), usage.status()]);
         const intelligence = {
           forecasts: forecasts.map(row => ({ id: row.id, created_at: row.created_at, status: row.status, source_snapshot_ids: row.source_snapshot_ids, week: row.forecast.week })),
           optimization: optimizations[0]?.optimization || null,

@@ -6,7 +6,7 @@ This runbook covers one Railway service, one private persistent volume and persi
 
 Keep these settings until their external gates have receipts:
 
-- `COLLECTOR_GATES_VERIFIED=false` and the collector schedule paused.
+- `COLLECTOR_GATES_VERIFIED=false`, `FULL_LEAGUE_COLLECTOR_GATES_VERIFIED=false`, and the collector schedule paused.
 - `ACTION_MODE=shadow`, `ACTION_GATES_VERIFIED=false`, `ACTION_ENABLED_CLASSES=` and the stop switch active.
 - a finite `MODEL_CALL_BUDGET`; record the boxes.dev allowance separately from provider usage.
 - one Railway replica with `/data` mounted to the persistent volume.

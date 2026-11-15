@@ -81,6 +81,7 @@ const matchupKinds = new Set(['matchup_weekly_category_totals', 'standard_team_p
 
 /** Read-only projection: immutable evidence stays separate from period-specific facts and decisions. */
 function observationOverview(records, leagueId) {
+  const historyPointer = record => ({ id: record.id, observed_at: record.observed_at, stored_at: record.stored_at, coverage: record.coverage, content_hash: record.content_hash });
   const scopes = new Map();
   for (const record of records) {
     if (record?.kind !== 'observation' || !record.scope) continue;
@@ -97,7 +98,8 @@ function observationOverview(records, leagueId) {
         scope: structuredClone(history[0].scope),
         current: structuredClone(history.find(record => record.coverage?.status === 'complete') ?? null),
         latest: structuredClone(history[0]),
-        history: structuredClone(history)
+        history: history.slice(0, 5).map(historyPointer),
+        history_count: history.length
       };
     })
   };

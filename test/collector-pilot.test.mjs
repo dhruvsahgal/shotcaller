@@ -113,6 +113,7 @@ test('the external mutation guard rejects every Yahoo write class before interac
     assert.equal(result.action_class, actionClass, `${method} ${url}`);
   }
   assert.deepEqual(mutationGuardPolicy.blocked_action_classes, ['lineup', 'add_drop', 'trade', 'messaging']);
+  assert.deepEqual(mutationGuardPolicy.allowed_scope_kinds, ['team_roster', 'league_coverage']);
   assert.equal(Object.isFrozen(mutationGuardPolicy), true);
 });
 

@@ -26,7 +26,7 @@ export function configuration(env = process.env) {
   for (const [key, min, max] of [['expectedTeams', 2, 30], ['maxPages', 1, 200], ['port', 1, 65535], ['modelCallBudget', 1, 10000]]) if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) throw new Error(`Invalid ${key} configuration`);
   if (!Number.isSafeInteger(config.dataQuotaBytes) || config.dataQuotaBytes < 0) throw new Error('Invalid data quota configuration');
   if (!/^\d+$/.test(config.leagueId)) throw new Error('Invalid league ID');
-  Object.assign(config, { collectorToken: env.COLLECTOR_TOKEN || '', collectorGatesVerified: env.COLLECTOR_GATES_VERIFIED === 'true', boxesRunUrl: env.BOXES_RUN_URL || '', boxesSecret: env.BOXES_AUTOMATION_SECRET || '', boxesThreadId: env.BOXES_COLLECTOR_THREAD_ID || '', boxesAutomationId: env.BOXES_AUTOMATION_ID || '' });
+  Object.assign(config, { collectorToken: env.COLLECTOR_TOKEN || '', collectorGatesVerified: env.COLLECTOR_GATES_VERIFIED === 'true', fullLeagueCollectorGatesVerified: env.FULL_LEAGUE_COLLECTOR_GATES_VERIFIED === 'true', boxesRunUrl: env.BOXES_RUN_URL || '', boxesSecret: env.BOXES_AUTOMATION_SECRET || '', boxesThreadId: env.BOXES_COLLECTOR_THREAD_ID || '', boxesAutomationId: env.BOXES_AUTOMATION_ID || '' });
   if (config.collectorToken && (config.collectorToken.length < 24 || config.collectorToken === config.token)) throw new Error('Invalid collector broker token: use a distinct token of at least 24 characters');
   if (config.boxesRunUrl) {
     const url = new URL(config.boxesRunUrl);

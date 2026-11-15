@@ -9,11 +9,11 @@ const yahooFantasyHost = 'basketball.fantasysports.yahoo.com';
 const yahooHosts = new Set([yahooFantasyHost, 'sports.yahoo.com']);
 const outputKeys = ['contract_version', 'collector_mode', 'decision_output', 'status', 'league', 'team', 'scoring_period', 'scope', 'allowed_pages', 'source', 'coverage', 'roster', 'login', 'warnings'];
 const sessionQueryNames = /^(?:sid|session|sessionid|session_id|crumb|token|access_token|auth|authorization|key|code|state|nonce|password|passwd|email|account|user|username|login)$/i;
-const safeSourceQueryNames = new Set(['date', 'week', 'stat1', 'stat2']);
+const safeSourceQueryNames = new Set(['date', 'week', 'stat1', 'stat2', 'status', 'count']);
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const evidenceReference = /^evidence\/[A-Za-z0-9._/-]+(?:#[A-Za-z0-9._:-]+)?$/;
 const allowedSlotGroups = new Set(['active', 'bench', 'il']);
-const loginChallenges = new Set(['login', 'passkey', 'consent', 'challenge']);
+export const collectorLoginChallenges = new Set(['login', 'passkey', 'consent', 'challenge']);
 
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -153,7 +153,7 @@ function validateExtraction(extraction, input, allowedPages) {
     assert(page.checkpoint.league_id === input.league.id, 'Extraction checkpoint league identity mismatch');
     assert(page.checkpoint.team_id === input.team.id, 'Extraction checkpoint team identity mismatch');
     if (input.status === 'needs_login') {
-      assert(loginChallenges.has(page.checkpoint.kind), 'Invalid login extraction checkpoint');
+      assert(collectorLoginChallenges.has(page.checkpoint.kind), 'Invalid login extraction checkpoint');
     } else {
       assert(page.checkpoint.kind === 'team_roster', 'Invalid roster extraction checkpoint');
       assert(page.checkpoint.scoring_period_key === input.scoring_period.key, 'Extraction checkpoint scoring period mismatch');
@@ -235,7 +235,7 @@ export function validateCollectorOutput(input) {
 
   exactKeys(input.login, ['required', 'challenge'], 'login');
   assert(typeof input.login.required === 'boolean', 'Invalid login.required');
-  assert(input.login.challenge === null || loginChallenges.has(input.login.challenge), 'Invalid login.challenge');
+  assert(input.login.challenge === null || collectorLoginChallenges.has(input.login.challenge), 'Invalid login.challenge');
   assert(Array.isArray(input.warnings) && input.warnings.length <= 20, 'Invalid warnings');
   input.warnings.forEach(warning => nullableText(warning, 'warning', { required: true, max: 500 }));
 
@@ -274,13 +274,32 @@ const blockedActionPatterns = Object.freeze({
 });
 
 export const mutationGuardPolicy = Object.freeze({
-  version: 1,
+  version: 2,
   mode: 'default_deny',
   allowed_methods: Object.freeze(['GET', 'HEAD']),
-  allowed_page_kind: 'team_roster',
+  allowed_scope_kinds: Object.freeze(['team_roster', 'league_coverage']),
   requires_exact_allowed_page: true,
   blocked_action_classes: Object.freeze(['lineup', 'add_drop', 'trade', 'messaging'])
 });
+
+function compileAllowedPages(allowedPages) {
+  if (!Array.isArray(allowedPages) || allowedPages.length === 0 || allowedPages.length > 256) throw new Error('Invalid allowed pages');
+  return allowedPages.map(page => {
+    const candidate = parsedUrl(page, 'allowed page');
+    assert(candidate.hostname === yahooFantasyHost && !candidate.hash, 'Invalid allowed page');
+    for (const key of candidate.searchParams.keys()) assert(safeSourceQueryNames.has(key), 'Invalid allowed page');
+    return canonicalReadPage(candidate);
+  });
+}
+
+export function validateCollectorAllowedPages(allowedPages) {
+  try {
+    compileAllowedPages(allowedPages);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function classifyAction(url, method) {
   const target = `${url.pathname}${url.search}`;
@@ -298,17 +317,11 @@ export function validateCollectorRequest({ method, url, allowedPages }) {
   const actionClass = classifyAction(parsed, normalizedMethod);
   if (actionClass) return { allowed: false, action_class: actionClass, reason: 'blocked_action_class' };
   if (parsed.hostname !== yahooFantasyHost) return { allowed: false, action_class: 'external_navigation', reason: 'host_not_allowed' };
-  if (!Array.isArray(allowedPages) || allowedPages.length === 0 || allowedPages.length > 4) return { allowed: false, action_class: 'out_of_scope', reason: 'missing_allowed_pages' };
   let allowed;
   try {
-    allowed = allowedPages.map(page => {
-      const candidate = parsedUrl(page, 'allowed page');
-      assert(candidate.hostname === yahooFantasyHost && !candidate.hash, 'Invalid allowed page');
-      for (const key of candidate.searchParams.keys()) assert(safeSourceQueryNames.has(key), 'Invalid allowed page');
-      return canonicalReadPage(candidate);
-    });
+    allowed = compileAllowedPages(allowedPages);
   } catch {
-    return { allowed: false, action_class: 'out_of_scope', reason: 'invalid_allowed_pages' };
+    return { allowed: false, action_class: 'out_of_scope', reason: Array.isArray(allowedPages) && allowedPages.length > 0 && allowedPages.length <= 256 ? 'invalid_allowed_pages' : 'missing_allowed_pages' };
   }
   for (const key of parsed.searchParams.keys()) {
     if (!safeSourceQueryNames.has(key)) return { allowed: false, action_class: 'out_of_scope', reason: 'query_not_allowed' };
