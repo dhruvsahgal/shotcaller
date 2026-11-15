@@ -12,7 +12,7 @@ const artifactId = /^[A-Za-z0-9_-]{1,32}$/;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = message => { throw new Error(message); };
 
-export async function validateLocalLeagueBundle({ run, manifest, artifactRoot }) {
+export async function validateLocalLeagueBundle({ run, manifest, artifactRoot, includeArtifactBytes = false }) {
   if (!run || run.scope?.dataset !== 'league_coverage' || !run.collection_plan || !Array.isArray(run.allowed_pages)) fail('Invalid league run metadata');
   if (!manifest || manifest.version !== 1 || manifest.run_id !== run.id || manifest.idempotency_key !== run.idempotency_key || manifest.league_id !== run.scope.league_id || !Array.isArray(manifest.artifacts)) fail('Invalid collector manifest binding');
   if (manifest.artifacts.length < 3 || manifest.artifacts.length > ingestLimits.count) fail('Invalid collector artifact count');
@@ -39,7 +39,13 @@ export async function validateLocalLeagueBundle({ run, manifest, artifactRoot })
   const output = JSON.parse(artifacts.find(row => row.class === 'collector_output').bytesRead.toString('utf8'));
   const capture = JSON.parse(artifacts.find(row => row.class === 'structured_capture').bytesRead.toString('utf8'));
   const validation = validateLeagueCollectorBundle({ output, capture, run, artifacts });
-  return { valid: true, status: output.status, segments: validation.plan.segments.length, fragments: validation.fragments.length };
+  return {
+    valid: true,
+    status: output.status,
+    segments: validation.plan.segments.length,
+    fragments: validation.fragments.length,
+    ...(includeArtifactBytes ? { artifactBytes: new Map(artifacts.map(artifact => [artifact.id, artifact.bytesRead])) } : {})
+  };
 }
 
 async function main(argv) {

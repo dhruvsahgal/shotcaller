@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { canonicalDigest } from '../app/store.mjs';
 import { validateLocalLeagueBundle } from '../scripts/validate-league-collector-bundle.mjs';
+import { collectorUpload } from '../scripts/upload-collector-bundle.mjs';
 import { harness } from './helpers/collector-ingest.mjs';
 import { fullLeagueBundle, fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
@@ -54,4 +55,23 @@ test('league bundle preflight rejects forged source pages, future times and cove
     const input = await stagedBundle(bundle => { bundle.output.coverage_hash = '0'.repeat(64); });
     await assert.rejects(validateLocalLeagueBundle(input), /coverage reconciliation/);
   });
+});
+
+test('collector uploader independently rejects a changed Railway readback hash', async () => {
+  const input = await stagedBundle();
+  const capability = 'c'.repeat(43), observation_id = 'observation-readback-test';
+  const artifacts = input.manifest.artifacts.map(({ id, sha256, bytes }) => ({ id, sha256, bytes }));
+  const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const fetcher = async url => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/capabilities')) return reply(201, { token: capability, run_id: input.run.id, attempt_id: input.manifest.attempt_id, league_id: input.run.scope.league_id });
+    if (path.endsWith('/manifest')) return reply(201, input.manifest);
+    if (path.includes('/artifacts/')) {
+      const id = path.split('/').at(-1), descriptor = artifacts.find(row => row.id === id);
+      return reply(201, descriptor);
+    }
+    if (path.endsWith('/commit')) return reply(200, { run_id: input.run.id, attempt_id: input.manifest.attempt_id, status: 'complete', verified: true, observation_id, artifacts });
+    if (path.endsWith('/readback')) return reply(200, { run_id: input.run.id, attempt_id: input.manifest.attempt_id, status: 'complete', verified: true, observation_id, artifacts: artifacts.map((row, index) => index ? row : { ...row, sha256: 'f'.repeat(64) }) });
+  };
+  await assert.rejects(collectorUpload({ baseUrl: 'https://shotcaller.example', collectorToken: 'broker-secret-at-least-24', ...input, fetcher }), /readback mismatch/);
 });

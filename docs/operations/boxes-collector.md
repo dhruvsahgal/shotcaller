@@ -65,6 +65,16 @@ npm run validate:league-bundle -- data/pilot/run.json data/pilot/manifest.json d
 
 The validator checks manifest bindings and limits, reads every local artifact back, verifies bytes and hashes, and applies the same league plan, source-page, timestamp and coverage reconciliation used by Railway ingest. A successful receipt is compact: `{"valid":true,"status":"complete","segments":169,"fragments":169}`. Railway commit and readback remain the authoritative publication result.
 
+After preflight, an operator or credential-isolated broker can run the complete upload transaction without exposing the long-lived token or short-lived capability to the collector prompt:
+
+```sh
+# SHOTCALLER_URL and COLLECTOR_TOKEN must already be injected by the trusted
+# operator environment or secret manager. Never paste either secret here.
+npm run upload:league-bundle -- data/pilot/run.json data/pilot/manifest.json data/pilot
+```
+
+The command preflights before making a network request, mints one run-scoped capability, uploads the declared bytes, commits, and compares Railway readback with every local hash. Its receipt contains IDs, status, counts and hashes but no credential. A nonzero exit means the run is unverified; retain the local spool and investigate rather than starting a replacement. Do not put either environment variable in the boxes.dev agent prompt. If the collector can inspect the uploader's environment, run this command from a separate trusted operator or broker context.
+
 ## Mutation guard contract
 
 Print the machine-readable policy with:
