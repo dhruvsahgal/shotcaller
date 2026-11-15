@@ -6,7 +6,8 @@
     "test": "node --test test/*.test.mjs",
     "test:browser": "node --test test/browser/*.test.mjs",
     "shotcaller": "node --env-file-if-exists=.env app/cli.mjs",
-    "login": "node --env-file-if-exists=.env app/login.mjs"
+    "login": "node --env-file-if-exists=.env app/login.mjs",
+    "validate:league-bundle": "node scripts/validate-league-collector-bundle.mjs"
   },
   "dependencies": { "playwright": "1.64.1" }
 }

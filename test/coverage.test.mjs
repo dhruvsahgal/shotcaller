@@ -15,7 +15,8 @@ function rowsFor(spec) {
   return [{ player_id: 'player-1', team_id: spec.scope.team_id, stats: { pts: 20, fgm: 4, fga: 8 }, ...(spec.scope.dataset === 'market' ? { availability: spec.filters.availability } : {}), ...(spec.scope.dataset === 'daily_lineup' ? { slot: 'PG' } : {}), ...(spec.scope.dataset === 'daily_contributions' ? { fantasy_counted: true, subsequently_dropped: true } : {}) }];
 }
 function fragment(spec, overrides = {}) {
-  return { id: `capture-${spec.id}`, collection_id: 'run-1', segment_id: spec.id, scope: structuredClone(spec.scope), filters: structuredClone(spec.filters), page_key: 'first', terminal: true, next_page_key: null, status: 'complete', observed_at: '2026-11-16T00:00:00Z', source: { id: `source-${spec.id}`, hash: 'a'.repeat(64) }, evidence_refs: ['table#main'], rows: rowsFor(spec), ...overrides };
+  const rows = rowsFor(spec);
+  return { id: `capture-${spec.id}`, collection_id: 'run-1', segment_id: spec.id, scope: structuredClone(spec.scope), filters: structuredClone(spec.filters), page_key: 'first', terminal: true, next_page_key: null, status: 'complete', observed_at: '2026-11-16T00:00:00Z', source: { id: `source-${spec.id}`, hash: 'a'.repeat(64) }, evidence_refs: ['table#main'], rows, reported_total_rows: rows.length, ...overrides };
 }
 
 test('full league plan requires ten rosters, five pairings, all periods, seven dates and both availability filters', () => {
@@ -38,8 +39,8 @@ test('full league plan requires ten rosters, five pairings, all periods, seven d
 
 test('missing terminal, repeating pages, repeated rows and incomplete chains cannot advance completeness', () => {
   const spec = segment('market');
-  const first = fragment(spec, { terminal: false, next_page_key: 'page-2' });
-  const second = fragment(spec, { id: 'capture-page-2', page_key: 'page-2', rows: [{ player_id: 'player-2', availability: 'FA' }] });
+  const first = fragment(spec, { terminal: false, next_page_key: 'page-2', reported_total_rows: 2 });
+  const second = fragment(spec, { id: 'capture-page-2', page_key: 'page-2', rows: [{ player_id: 'player-2', availability: 'FA' }], reported_total_rows: 2 });
   assert.equal(assessSegment(spec, [first]).status, 'partial');
   assert.equal(assessSegment(spec, [first]).resume_page_key, 'page-2');
   assert.equal(assessSegment(spec, [first, second]).status, 'complete');

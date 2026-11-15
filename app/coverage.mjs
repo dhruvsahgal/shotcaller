@@ -1,5 +1,5 @@
 import { canonicalDigest } from './store.mjs';
-import { validateEvidenceScope, validateStats } from './schema.mjs';
+import { validateEvidenceScope, validateIdentifier, validateStats } from './schema.mjs';
 import { strictInstant, validDate } from './time.mjs';
 
 export const coverageDatasets = Object.freeze(['team_roster', 'matchups', 'team_period_stats', 'player_period_stats', 'daily_lineup', 'daily_contributions', 'market', 'transactions']);
@@ -9,8 +9,11 @@ const dayAfter = date => new Date(Date.parse(`${date}T00:00:00Z`) + 86400000).to
 
 /** The manifest declares what must be seen before collection starts; observed pages cannot shrink it. */
 export function createCoveragePlan({ league_id, season, scoring_period, team_ids, matchups, scoring_dates, transaction_window }) {
+  validateIdentifier(league_id, 'coverage league ID');
   if (!uniqueStrings(team_ids) || team_ids.length !== 10) throw new Error('Coverage requires ten distinct team IDs');
+  team_ids.forEach(teamId => validateIdentifier(teamId, 'coverage team ID'));
   if (!Array.isArray(matchups) || matchups.length !== 5 || !uniqueStrings(matchups.map(m => m.id)) || !matchups.every(m => uniqueStrings(m.team_ids) && m.team_ids.length === 2) || !equal(matchups.flatMap(m => m.team_ids).sort(), [...team_ids].sort())) throw new Error('Coverage requires five pairings covering every team once');
+  matchups.forEach(matchup => validateIdentifier(matchup.id, 'coverage matchup ID'));
   if (!Array.isArray(scoring_dates) || scoring_dates.length !== 7 || !scoring_dates.every((date, i) => validDate(date) && (!i || date === dayAfter(scoring_dates[i - 1])))) throw new Error('Coverage requires seven consecutive scoring dates');
   if (!transaction_window || !strictInstant(transaction_window.start) || !strictInstant(transaction_window.end) || Date.parse(transaction_window.start) >= Date.parse(transaction_window.end)) throw new Error('Invalid transaction window');
   const segments = [];
@@ -48,6 +51,7 @@ function fragmentIssues(segment, fragment) {
   if (fragment.terminal !== true && (typeof fragment.next_page_key !== 'string' || !fragment.next_page_key)) add('Missing terminal or next-page evidence');
   if (fragment.terminal === true && fragment.next_page_key != null) add('Terminal page also has a next-page key');
   if (fragment.reported_total_rows != null && (!Number.isSafeInteger(fragment.reported_total_rows) || fragment.reported_total_rows < 0)) add('Invalid reported row total');
+  if (fragment.status === 'complete' && fragment.terminal === true && !Number.isSafeInteger(fragment.reported_total_rows)) add('Complete terminal page needs a displayed row total');
   for (const row of Array.isArray(fragment.rows) ? fragment.rows : []) {
     if (!row || typeof row !== 'object') { add('Invalid source row'); continue; }
     const dataset = segment.scope.dataset;
@@ -58,6 +62,7 @@ function fragmentIssues(segment, fragment) {
     if (dataset === 'daily_lineup' && (typeof row.slot !== 'string' || !row.slot)) add('Missing lineup slot');
     if (dataset === 'daily_contributions' && (row.fantasy_counted !== true || !row.stats)) add('Daily contributions need explicit fantasy-counted source rows');
     if (['player_period_stats', 'team_period_stats', 'matchups'].includes(dataset) && !row.stats) add('Missing period statistics');
+    if (dataset === 'transactions' && (typeof row.provider_event_id !== 'string' || !row.provider_event_id || typeof row.status !== 'string' || !row.status || !Array.isArray(row.legs))) add('Transaction rows need provider identity, status and legs');
     if (row.stats) { try { validateStats(row.stats); } catch { add('Invalid source statistics'); } }
   }
   return { issues: [...new Set(issues)], restartRequired };
@@ -92,6 +97,7 @@ export function assessSegment(segment, fragments = []) {
   }
   if (visited.size !== pages.size) { issues.push('Unlinked pagination fragments'); restartRequired = true; }
   const rows = ordered.flatMap(page => Array.isArray(page.rows) ? page.rows : []);
+  if (terminal && ['team_roster', 'player_period_stats', 'daily_lineup', 'daily_contributions'].includes(segment.scope.dataset) && rows.length === 0) { issues.push('Required team dataset is unexpectedly empty'); restartRequired = true; }
   const rowKey = row => segment.scope.dataset === 'transactions' ? row?.provider_event_id ?? row?.transaction_id ?? null : row?.player_id ?? row?.team_id ?? null;
   const keys = rows.map(rowKey).filter(Boolean);
   if (new Set(keys).size !== keys.length) { issues.push('Repeated row across pagination'); restartRequired = true; }

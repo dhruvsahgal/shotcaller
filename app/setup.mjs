@@ -31,7 +31,7 @@ export async function saveSettings(config, patch, hasEvidence) {
 export async function setupStatus(config) {
   let sessionSaved = false;
   try { await access(join(config.dataDir, 'auth', 'yahoo.json')); sessionSaved = true; } catch {}
-  return { league_id: config.leagueId, expected_teams: config.expectedTeams, model_call_budget: config.modelCallBudget, model: config.model, endpoint: config.endpoint, api_key_saved: Boolean(config.apiKey), remote_browser_saved: Boolean(config.cdpUrl), yahoo_session_saved: sessionSaved, collector_broker_configured: Boolean(config.collectorToken), collector_gates_verified: Boolean(config.collectorGatesVerified) };
+  return { league_id: config.leagueId, expected_teams: config.expectedTeams, model_call_budget: config.modelCallBudget, model: config.model, endpoint: config.endpoint, api_key_saved: Boolean(config.apiKey), remote_browser_saved: Boolean(config.cdpUrl), yahoo_session_saved: sessionSaved, collector_broker_configured: Boolean(config.collectorToken), collector_gates_verified: Boolean(config.collectorGatesVerified), full_league_collector_gates_verified: Boolean(config.fullLeagueCollectorGatesVerified) };
 }
 const yahooDomain = domain => typeof domain === 'string' && /(^|\.)yahoo\.com$/.test(domain);
 export function yahooState(input) {

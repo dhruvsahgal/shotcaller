@@ -78,33 +78,76 @@ export class Store {
     const contentHash = canonicalDigest(input);
     return this.publish(attemptEnvelope(input, new Date().toISOString(), contentHash), 'attempts');
   }
-  async saveObservation(input) {
+  async observationRecord(input) {
     if (input?.correction_of != null) {
       try { await this.read(input.correction_of, 'observations'); }
       catch (error) { if (error.code === 'ENOENT') throw new Error('Observation correction references an unknown record'); throw error; }
     }
     const contentHash = canonicalDigest(input);
-    const record = await this.publish(observationEnvelope(input, new Date().toISOString(), contentHash), 'observations');
+    return observationEnvelope(input, new Date().toISOString(), contentHash);
+  }
+  async saveObservation(input) {
+    const record = await this.publish(await this.observationRecord(input), 'observations');
     await this.updateCompleteObservationIndex(record);
     return record;
   }
+  async saveObservations(inputs, concurrency = 8, updateIndex = true) {
+    if (!Array.isArray(inputs) || !inputs.length || !Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) throw new Error('Invalid observation batch');
+    const records = await Promise.all(inputs.map(input => this.observationRecord(input)));
+    const published = [];
+    for (let start = 0; start < records.length; start += concurrency) {
+      published.push(...await Promise.all(records.slice(start, start + concurrency).map(record => this.publish(record, 'observations'))));
+    }
+    if (updateIndex) await this.updateCompleteObservationIndexes(published);
+    return published;
+  }
   async updateCompleteObservationIndex(record) {
-    if (record.coverage?.status !== 'complete') return null;
+    return this.updateCompleteObservationIndexes([record]);
+  }
+  async updateCompleteObservationIndexes(records) {
+    const latestCandidates = new Map(), completeCandidates = new Map();
+    for (const record of records) {
+      const key = observationScopeKey(record.scope);
+      const latest = latestCandidates.get(key);
+      if (!latest || compareObservations(record, latest) > 0) latestCandidates.set(key, record);
+      if (record.coverage?.status !== 'complete') continue;
+      const complete = completeCandidates.get(key);
+      if (!complete || compareObservations(record, complete) > 0) completeCandidates.set(key, record);
+    }
+    if (!latestCandidates.size) return null;
     const update = async () => {
       const index = await this.observationIndex();
-      const key = observationScopeKey(record.scope);
-      const currentPointer = index.complete[key];
-      if (currentPointer) {
-        try {
-          const current = await this.read(currentPointer.id, 'observations');
-          if (compareObservations(record, current) <= 0) return index;
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error;
-        }
+      const readCurrent = async (pointers, key) => {
+        const pointer = pointers[key];
+        if (!pointer) return [key, null];
+        try { return [key, await this.read(pointer.id, 'observations')]; }
+        catch (error) { if (error.code === 'ENOENT') return [key, null]; throw error; }
+      };
+      const [currentLatest, currentComplete] = await Promise.all([
+        Promise.all([...latestCandidates].map(([key]) => readCurrent(index.latest, key))),
+        Promise.all([...completeCandidates].map(([key]) => readCurrent(index.complete, key)))
+      ]);
+      const latestRecords = new Map(currentLatest), completeRecords = new Map(currentComplete);
+      let changed = false;
+      const latest = { ...index.latest }, complete = { ...index.complete };
+      for (const [key, record] of latestCandidates) {
+        const current = latestRecords.get(key);
+        if (current && compareObservations(record, current) <= 0) continue;
+        latest[key] = { id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash };
+        changed = true;
       }
-      const pointer = { id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash };
-      const complete = Object.fromEntries(Object.entries({ ...index.complete, [key]: pointer }).sort(([a], [b]) => a.localeCompare(b)));
-      const next = { ...index, complete };
+      for (const [key, record] of completeCandidates) {
+        const current = completeRecords.get(key);
+        if (current && compareObservations(record, current) <= 0) continue;
+        complete[key] = { id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash };
+        changed = true;
+      }
+      if (!changed) return index;
+      const next = {
+        schema_version: 2,
+        latest: Object.fromEntries(Object.entries(latest).sort(([a], [b]) => a.localeCompare(b))),
+        complete: Object.fromEntries(Object.entries(complete).sort(([a], [b]) => a.localeCompare(b)))
+      };
       await atomicJSON(join(this.root, 'indexes', 'complete-observations.json'), next);
       return next;
     };
@@ -113,26 +156,42 @@ export class Store {
     return pending;
   }
   async rebuildObservationIndex() {
-    const complete = new Map();
+    const latest = new Map(), complete = new Map();
     for (const record of await this.list('observations')) {
-      if (record.coverage?.status !== 'complete') continue;
       const key = observationScopeKey(record.scope);
+      const current = latest.get(key);
+      if (!current || compareObservations(record, current) > 0) latest.set(key, record);
+      if (record.coverage?.status !== 'complete') continue;
       const previous = complete.get(key);
       if (!previous || compareObservations(record, previous) > 0) complete.set(key, record);
     }
+    const pointers = entries => Object.fromEntries([...entries.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, record]) => [key, {
+      id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash
+    }]));
     const index = {
-      schema_version: 1,
-      complete: Object.fromEntries([...complete.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, record]) => [key, {
-        id: record.id, scope: record.scope, observed_at: record.observed_at, content_hash: record.content_hash
-      }]))
+      schema_version: 2,
+      latest: pointers(latest),
+      complete: pointers(complete)
     };
     await this.init();
     await atomicJSON(join(this.root, 'indexes', 'complete-observations.json'), index);
     return index;
   }
   async observationIndex() {
-    try { return JSON.parse(await readFile(join(this.root, 'indexes', 'complete-observations.json'), 'utf8')); }
+    try {
+      const index = JSON.parse(await readFile(join(this.root, 'indexes', 'complete-observations.json'), 'utf8'));
+      return index.schema_version === 2 && index.latest && index.complete ? index : this.rebuildObservationIndex();
+    }
     catch (error) { if (error.code === 'ENOENT') return this.rebuildObservationIndex(); throw error; }
+  }
+  async currentObservations() {
+    const index = await this.observationIndex();
+    const records = [];
+    for (const pointer of Object.values(index.latest)) {
+      try { records.push(await this.read(pointer.id, 'observations')); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    return records.sort((a, b) => compareObservations(b, a));
   }
   async completeObservation(scope) {
     const pointer = (await this.observationIndex()).complete[observationScopeKey(scope)];
@@ -144,7 +203,16 @@ export class Store {
   async list(folder = 'snapshots') {
     await this.init();
     const ids = (await readdir(join(this.root, folder))).filter(id => !id.startsWith('.'));
-    const records = await Promise.all(ids.map(id => this.read(id, folder)));
+    let records = await Promise.all(ids.map(id => this.read(id, folder)));
+    if (folder === 'observations') {
+      const visible = [];
+      for (const record of records) {
+        if (!record.commit_id) { visible.push(record); continue; }
+        try { await this.read(record.commit_id, 'observations'); visible.push(record); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      records = visible;
+    }
     const timestamp = row => String(row.stored_at ?? row.recorded_at ?? row.created_at ?? '');
     return records.sort((a, b) => timestamp(b).localeCompare(timestamp(a)) || b.id.localeCompare(a.id));
   }

@@ -103,7 +103,7 @@ Browser tests use self-contained synthetic fixtures. The user's historical `data
 
 The app now has a paused cloud-collector control panel and a separate, capability-scoped upload API. A single roster capture can be uploaded as a bounded manifest plus hashed source artifacts, reconciled, and read back from the volume. Runs and attempts survive restart; overlapping attempts cannot publish a second logical dataset. Schedule slots are 06:00/18:00 Singapore with latest-slot catch-up. Live dispatch targets one existing boxes.dev thread and stays gated by default. See [the pilot protocol](docs/operations/boxes-collector.md#railway-ingest-and-schedule-u4).
 
-This does not establish a connected autonomous broker, proven Yahoo mutation guard or full-league pilot. Keep `COLLECTOR_GATES_VERIFIED=false` and the schedule paused until those external checks and a private Railway restore test have receipts.
+This does not establish a connected autonomous broker, proven Yahoo mutation guard or full-league pilot. Keep `COLLECTOR_GATES_VERIFIED=false`, `FULL_LEAGUE_COLLECTOR_GATES_VERIFIED=false`, and the schedule paused until those external checks and a private Railway restore test have receipts.
 
 ### Controlled action pilot
 

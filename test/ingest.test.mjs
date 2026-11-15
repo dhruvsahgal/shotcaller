@@ -8,6 +8,7 @@ import { CollectorIngest, ingestLimits } from '../app/ingest.mjs';
 import { createApp } from '../app/server.mjs';
 import { Store } from '../app/store.mjs';
 import { harness, bundle, stage } from './helpers/collector-ingest.mjs';
+import { fullLeagueBundle, fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
 test('bounded artifacts publish one logical dataset across overlap, retry and restart', async () => {
   const h = await harness();
@@ -126,4 +127,94 @@ test('HTTP capabilities cannot access setup, analysis, actions or other attempt 
     assert.equal((await request('/api/collector/artifacts/unknown', cap.token)).status, 400);
     assert.equal((await request('/api/collector/settings', h.config.token, 'POST', { paused: false })).status, 400);
   } finally { await new Promise(resolve => app.close(resolve)); }
+});
+
+test('full-league bundle publishes every segment plus a recomputed coverage observation', async () => {
+  const h = await harness();
+  const run = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  const attemptId = 'collector-full-league';
+  const capability = await h.ingest.mint({ run_id: run.id, attempt_id: attemptId });
+  const data = await fullLeagueBundle(run, attemptId);
+  await h.ingest.manifest(capability, data.manifest);
+  for (const file of data.files) await h.ingest.upload(capability, file.id, file.bytes);
+  const result = await h.ingest.commit(capability);
+  assert.equal(result.status, 'complete');
+  const coverage = await h.store.read(result.observation_id, 'observations');
+  assert.equal(coverage.scope.dataset, 'league_coverage');
+  assert.equal(coverage.coverage.status, 'complete');
+  assert.equal(coverage.data.fragments.length, run.collection_plan.segments.length);
+  const observations = await h.store.list('observations');
+  assert.equal(observations.filter(record => record.scope.dataset !== 'league_coverage').length, run.collection_plan.segments.length);
+  for (const dataset of ['team_roster', 'matchups', 'team_period_stats', 'player_period_stats', 'daily_lineup', 'daily_contributions', 'market', 'transactions']) {
+    const representative = observations.find(record => record.scope.dataset === dataset);
+    assert.equal((await h.store.completeObservation(representative.scope)).id, representative.id);
+  }
+  assert.equal((await h.ingest.readback(capability)).status, 'complete');
+});
+
+test('full-league commit rejects a forged coverage summary before publishing observations', async () => {
+  const h = await harness();
+  const run = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  const attemptId = 'collector-full-league-forged';
+  const capability = await h.ingest.mint({ run_id: run.id, attempt_id: attemptId });
+  const data = await fullLeagueBundle(run, attemptId);
+  const output = JSON.parse(data.files[0].bytes);
+  output.coverage_hash = '0'.repeat(64);
+  data.files[0].bytes = Buffer.from(JSON.stringify(output));
+  data.manifest.artifacts[0].bytes = data.files[0].bytes.length;
+  data.manifest.artifacts[0].sha256 = createHash('sha256').update(data.files[0].bytes).digest('hex');
+  await h.ingest.manifest(capability, data.manifest);
+  for (const file of data.files) await h.ingest.upload(capability, file.id, file.bytes);
+  await assert.rejects(h.ingest.commit(capability), /coverage reconciliation/);
+  assert.equal((await h.store.list('observations')).length, 0);
+});
+
+test('full-league bundle rejects source pages outside the run and impossible future timestamps', async () => {
+  const h = await harness();
+  const run = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  for (const [attemptId, mutate, message] of [
+    ['collector-full-league-page-forged', capture => { capture.fragments[0].source.url = 'https://basketball.fantasysports.yahoo.com/nba/12345'; }, /source page/],
+    ['collector-full-league-time-forged', capture => { capture.fragments[0].observed_at = '9999-01-01T00:00:00Z'; }, /observation time/]
+  ]) {
+    const capability = await h.ingest.mint({ run_id: run.id, attempt_id: attemptId });
+    const data = await fullLeagueBundle(run, attemptId);
+    const capture = JSON.parse(data.files[1].bytes); mutate(capture);
+    data.files[1].bytes = Buffer.from(JSON.stringify(capture));
+    data.manifest.artifacts[1].bytes = data.files[1].bytes.length;
+    data.manifest.artifacts[1].sha256 = createHash('sha256').update(data.files[1].bytes).digest('hex');
+    const output = JSON.parse(data.files[0].bytes);
+    output.source.source_hash = (await import('../app/store.mjs')).canonicalDigest(capture);
+    if (attemptId.includes('time')) output.source.observed_at = '9999-01-01T00:00:00Z';
+    data.files[0].bytes = Buffer.from(JSON.stringify(output));
+    data.manifest.artifacts[0].bytes = data.files[0].bytes.length;
+    data.manifest.artifacts[0].sha256 = createHash('sha256').update(data.files[0].bytes).digest('hex');
+    await h.ingest.manifest(capability, data.manifest);
+    for (const file of data.files) await h.ingest.upload(capability, file.id, file.bytes);
+    await assert.rejects(h.ingest.commit(capability), message);
+  }
+  assert.equal((await h.store.list('observations')).length, 0);
+});
+
+test('full-league commit recovers hidden segments after coverage publication is interrupted', async () => {
+  const h = await harness();
+  const run = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  const saveObservation = h.store.saveObservation.bind(h.store);
+  let fail = true;
+  h.store.saveObservation = async input => {
+    if (fail && input.scope.dataset === 'league_coverage') { fail = false; throw new Error('simulated coverage interruption'); }
+    return saveObservation(input);
+  };
+  const first = await h.ingest.mint({ run_id: run.id, attempt_id: 'collector-full-league-retry-one' });
+  const firstBundle = await fullLeagueBundle(run, first.attempt_id);
+  await h.ingest.manifest(first, firstBundle.manifest);
+  for (const file of firstBundle.files) await h.ingest.upload(first, file.id, file.bytes);
+  await assert.rejects(h.ingest.commit(first), /coverage interruption/);
+  assert.equal((await h.store.list('observations')).length, 0);
+  const second = await h.ingest.mint({ run_id: run.id, attempt_id: 'collector-full-league-retry-two' });
+  const secondBundle = await fullLeagueBundle(run, second.attempt_id);
+  await h.ingest.manifest(second, secondBundle.manifest);
+  for (const file of secondBundle.files) await h.ingest.upload(second, file.id, file.bytes);
+  const result = await h.ingest.commit(second);
+  assert.equal(result.status, 'complete');
+  assert.equal((await h.store.list('observations')).length, run.collection_plan.segments.length + 1);
 });

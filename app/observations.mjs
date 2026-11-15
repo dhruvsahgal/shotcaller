@@ -39,6 +39,7 @@ export function observationEnvelope(input, storedAt, contentHash) {
   if (typeof input.parser_version !== 'string' || !input.parser_version) throw new Error('Invalid observation parser version');
   if (!isPlainObject(input.data) && !Array.isArray(input.data)) throw new Error('Invalid observation data');
   if (input.correction_of != null) validateIdentifier(input.correction_of, 'correction id');
+  if (input.commit_id != null) validateIdentifier(input.commit_id, 'observation commit id');
   validateRecordLinks(input.links ?? {});
   validateTimestamp(storedAt, 'storage time');
   if (!/^[a-f0-9]{64}$/.test(contentHash)) throw new Error('Invalid observation content hash');
@@ -49,6 +50,7 @@ export function observationEnvelope(input, storedAt, contentHash) {
     team_id: input.scope.team_id ?? null,
     matchup_id: input.scope.matchup_id ?? null,
     correction_of: input.correction_of ?? null,
+    commit_id: input.commit_id ?? null,
     links: structuredClone(input.links ?? {}),
     stored_at: storedAt,
     content_hash: contentHash

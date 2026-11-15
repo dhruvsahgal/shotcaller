@@ -2,9 +2,9 @@
 
 ## Implementation status
 
-The repository provides fixture-tested full-league manifests, pagination/resumption, market normalization, observation publication inputs and audit reporting. The production collector ingest and scheduler still accept only the reviewed `team_roster` contract. Expanded browser extraction and upload routing are **not enabled**. No seven-day live pilot has passed. The dashboard shows unknown coverage until dated, validated full-league evidence is saved.
+The production run journal and restricted ingest endpoint now accept either the reviewed single-roster contract or a declared full-league collection plan. Full-league commit recomputes every segment and pagination chain, verifies source artifacts, publishes period-scoped observations and derives a league coverage observation. The browser adapter and credential-isolated upload broker have not passed a live cloud pilot, so recurring collection remains paused. The dashboard shows unknown coverage until dated, validated full-league evidence is actually saved.
 
-Keep the existing live guard in [boxes-collector.md](boxes-collector.md). Deploying these modules does not authorize Yahoo writes or prove recurring collection works. Before enabling expanded collection, review its source extractors, mutation-denying browser boundary, scoped upload contract, private-volume readback and restore procedure. Use synthetic fixtures while those gates remain open.
+Keep the existing live guard in [boxes-collector.md](boxes-collector.md). This ingest capability does not authorize Yahoo writes or prove recurring collection works. Before enabling expanded collection, review its source extractors, mutation-denying browser boundary, scoped upload transport, private-volume readback and restore procedure. Use synthetic fixtures while those gates remain open.
 
 ## Declare the collection before browsing
 
@@ -25,7 +25,7 @@ A zero-row page requires source evidence of the empty result and terminal state.
 
 ## Segment adapter contract
 
-`collectDatasetSegment({segment, observe, fragments, limits})` is an injected adapter seam, not a Yahoo crawler. The reviewed adapter must return a fragment containing:
+`collectDatasetSegment({segment, observe, fragments, limits})` is an injected adapter seam, not a Yahoo crawler. The cloud adapter must return a fragment containing:
 
 - `id`, stable `collection_id`, `segment_id`, exact `scope` and `filters` copied from the declared segment and independently checked against the displayed page.
 - `observed_at` as an exact offset-bearing instant, preserved `source.id` / SHA-256 `source.hash`, and nonempty `evidence_refs` pointing to the captured page/rows.
@@ -36,9 +36,9 @@ Rows use stable player/team IDs. Matchup and team-total rows carry statistics an
 
 `assessSegment` checks context, page chains, duplicate pages/rows, visible totals and required entities. `pendingSegments` resumes the next page of an incomplete segment; an identity/filter/date/run mismatch requires a fresh segment capture. `collectDatasetSegment` bounds page steps, elapsed time and cumulative estimated source tokens. It never silently recollects other datasets. Persist fragments before moving on. After a process timeout the caller must retain the previous saved checkpoint.
 
-Use `segmentObservation({id, segment, fragments, source_id})` to create input for `Store.saveObservation`. Save the source bundle first, preserve its fragments, and use fresh immutable IDs for corrections. The resulting observation retains its period, coverage caveats, rows and evidence links. This interface does not bypass the current roster-only ingest capability.
+The restricted ingest endpoint uses `segmentObservation({id, segment, fragments, source_id})` after all uploaded bytes and hashes read back correctly. It saves one immutable observation per captured segment and one derived `league_coverage` observation. A repeated logical run reuses the same records and retains a separate attempt receipt.
 
-For the dashboard, a future reviewed adapter can save a `league_coverage` observation with `data: {plan, fragments}`. The projection rebuilds and checks the declaration and recomputes coverage; it does not trust a supplied complete flag. Publish a new version after each segment attempt, retaining the previous version. Do not merge fragments from different collection runs to claim a complete run.
+The dashboard rebuilds and checks `league_coverage` from `data: {plan, fragments}`; it never trusts a supplied complete flag. Publish a new logical run after a later segment attempt, retaining the previous observation. Do not merge fragments from different collection IDs to claim a complete run.
 
 ## Market evidence
 

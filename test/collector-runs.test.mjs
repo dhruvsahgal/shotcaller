@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CollectorRuns, collectionSlot, nextCollectionSlot } from '../app/collector-runs.mjs';
+import { CollectorRuns, collectionSlot, nextCollectionSlot, fullLeagueAllowedPages } from '../app/collector-runs.mjs';
 import { harness, scope } from './helpers/collector-ingest.mjs';
 import { validateCollectorRequest } from '../scripts/validate-collector-output.mjs';
+import { fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
 test('SGT due slots are durable, paused by default and catch up only latest missed slot', async () => {
   assert.equal(collectionSlot(Date.parse('2026-11-14T09:59:59Z')), '2026-11-13T22:00:00.000Z');
@@ -80,4 +81,60 @@ test('ambiguous dispatch is durable and blocks duplicates until reconciled', asy
   assert.equal(accepted.status, 'awaiting_artifacts');
   assert.equal(calls, 2);
   assert.notEqual(accepted.attempt_id, result.attempt_id);
+});
+
+test('full-league intentions persist the declared plan and exact bounded Yahoo read pages', async () => {
+  const h = await harness();
+  const configured = await h.runs.configure({ paused: true, scope: null, plan: fullLeaguePlanInput });
+  assert.equal(configured.plan.segments.length, 169);
+  const prepared = await h.runs.runNow({ intended_for: '2026-11-16T09:00:00Z' });
+  assert.equal(prepared.run.scope.dataset, 'league_coverage');
+  assert.equal(prepared.launch.status, 'supervised_upload');
+  const rosterOverride = await h.runs.runNow({ scope, intended_for: '2026-11-16T09:30:00Z' });
+  assert.equal(rosterOverride.run.scope.dataset, 'team_roster');
+  assert.equal(rosterOverride.run.collection_plan, undefined);
+  const run = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  assert.equal(run.scope.dataset, 'league_coverage');
+  assert.equal(run.collection_plan.segments.length, 169);
+  assert.equal(run.allowed_pages.length, 207);
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/players?status=FA'));
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/transactions'));
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/1?date=2026-11-16'));
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/players?count=975&status=FA'));
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/players?count=975&status=W'));
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/transactions?count=975'));
+  for (const teamId of fullLeaguePlanInput.team_ids) for (const date of fullLeaguePlanInput.scoring_dates) assert.ok(run.allowed_pages.includes(`https://basketball.fantasysports.yahoo.com/nba/999/${teamId}?date=${date}`));
+  for (const page of run.allowed_pages) assert.equal(validateCollectorRequest({ method: 'GET', url: page, allowedPages: run.allowed_pages }).allowed, true);
+  assert.equal(validateCollectorRequest({ method: 'POST', url: run.allowed_pages[0], allowedPages: run.allowed_pages }).allowed, false);
+  const repeated = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  assert.equal(repeated.id, run.id);
+});
+
+test('full-league plan identifiers and activation require their own verified gate', async () => {
+  const h = await harness();
+  const forged = structuredClone(fullLeaguePlanInput);
+  forged.team_ids[0] = '../12345';
+  forged.matchups[0].team_ids[0] = '../12345';
+  await assert.rejects(h.runs.create({ plan: forged, intended_for: '2026-11-16T10:00:00Z' }), /team ID/);
+  Object.assign(h.config, { collectorGatesVerified: true, fullLeagueCollectorGatesVerified: false, boxesRunUrl: 'https://boxes.dev/test/run', boxesSecret: 'secret', boxesThreadId: 'thread' });
+  await assert.rejects(h.runs.configure({ paused: false, scope: null, plan: fullLeaguePlanInput }), /gates/);
+  h.config.fullLeagueCollectorGatesVerified = true;
+  const configured = await h.runs.configure({ paused: false, scope: null, plan: fullLeaguePlanInput });
+  assert.equal(configured.paused, false);
+});
+
+test('full-league dispatch deadline covers its runtime budget plus upload grace', async () => {
+  const h = await harness();
+  Object.assign(h.config, { collectorGatesVerified: true, fullLeagueCollectorGatesVerified: true, boxesRunUrl: 'https://boxes.dev/test/run', boxesSecret: 'secret', boxesThreadId: 'thread' });
+  const runs = new CollectorRuns(h.config, h.store, { ...h.options, fetcher: async () => ({ status: 202, json: async () => ({ status: 'starting' }) }) });
+  const run = await runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  const launchedAt = h.options.now();
+  const receipt = await runs.dispatch(run);
+  assert.equal(Date.parse(receipt.deadline) - launchedAt, 65 * 60_000);
+  h.advance(64 * 60_000);
+  await runs.expirePending();
+  assert.equal((await runs.status()).alerts.length, 0);
+  h.advance(2 * 60_000);
+  await runs.expirePending();
+  assert.equal((await runs.status()).alerts[0].outcome, 'timed_out');
 });

@@ -25,8 +25,11 @@ test('older evidence and partial datasets cannot replace a newer complete scoped
   assert.equal((await store.completeObservation(scope())).id, newer.id);
 
   const marketComplete = await store.saveObservation(observation('observation-market-complete', '2026-11-14T12:00:00Z', 'market_availability'));
-  await store.saveObservation(observation('observation-market-partial', '2026-11-14T13:00:00Z', 'market_availability', 'partial'));
+  const marketPartial = await store.saveObservation(observation('observation-market-partial', '2026-11-14T13:00:00Z', 'market_availability', 'partial'));
   assert.equal((await store.completeObservation(scope('market_availability'))).id, marketComplete.id);
+  const current = await store.currentObservations();
+  assert.deepEqual(new Set(current.map(record => record.id)), new Set([newer.id, marketPartial.id]));
+  assert.equal(current.some(record => record.id === 'observation-old'), false);
 });
 
 test('corrections retain original bytes and retries reject conflicting content', async () => {

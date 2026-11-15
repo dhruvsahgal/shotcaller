@@ -171,16 +171,18 @@ async function loadSetup() {
 }
 async function loadCollector() {
   collector = await api('collector');
-  $('collector-status').textContent = `${collector.paused ? 'PAUSED' : 'ACTIVE'} · 06:00 / 18:00 Singapore · next slot ${collector.next_run} · ${collector.gates_verified ? 'Pilot gates attested by operator' : 'Live pilot gates unverified'}`;
+  const target = collector.plan ? `full league · ${collector.plan.segments.length} segments` : collector.scope ? `team ${collector.scope.team_id} roster` : 'no collection target';
+  $('collector-status').textContent = `${collector.paused ? 'PAUSED' : 'ACTIVE'} · ${target} · 06:00 / 18:00 Singapore · next slot ${collector.next_run} · ${collector.gates_verified ? 'Pilot gates attested by operator' : 'Live pilot gates unverified'}`;
   if (collector.scope) {
     $('collector-team').value = collector.scope.team_id;
     $('collector-season').value = collector.scope.season;
     $('collector-week').value = collector.scope.scoring_period.key;
     $('collector-timezone').value = collector.scope.scoring_period.timezone;
   }
-  $('collector-run').disabled = !collector.scope;
+  const hasTarget = Boolean(collector.scope || collector.plan);
+  $('collector-run').disabled = !hasTarget;
   $('collector-run').textContent = collector.gates_verified && collector.trigger_configured ? 'Run now' : 'Prepare supervised run';
-  $('collector-pause').disabled = !collector.scope || (!collector.gates_verified && collector.paused);
+  $('collector-pause').disabled = !hasTarget || (!collector.gates_verified && collector.paused);
   $('collector-pause').textContent = collector.paused ? 'Resume schedule' : 'Pause schedule';
   $('collector-attempts').replaceChildren(table(['Attempt', 'Outcome', 'Finished'], collector.attempts.map(a => [a.id, a.outcome, a.finished_at])));
 }
@@ -204,7 +206,7 @@ function setupForm(id, action) {
   }); });
 }
 setupForm('league-form', () => api('setup', { leagueId: $('setup-league').value.trim(), expectedTeams: Number($('setup-teams').value) }));
-setupForm('collector-form', () => api('collector/settings', { paused: true, scope: { dataset: 'team_roster', league_id: state.league_id, season: $('collector-season').value.trim(), team_id: $('collector-team').value.trim(), scoring_period: { kind: 'week', key: $('collector-week').value.trim(), timezone: $('collector-timezone').value.trim() }, value_basis: { value: 'observed', aggregation: 'roster' } } }));
+setupForm('collector-form', () => api('collector/settings', { paused: true, plan: null, scope: { dataset: 'team_roster', league_id: state.league_id, season: $('collector-season').value.trim(), team_id: $('collector-team').value.trim(), scoring_period: { kind: 'week', key: $('collector-week').value.trim(), timezone: $('collector-timezone').value.trim() }, value_basis: { value: 'observed', aggregation: 'roster' } } }));
 setupForm('model-form', async () => {
   const patch = { model: $('setup-model').value.trim(), endpoint: $('setup-endpoint').value.trim() };
   if ($('setup-key').value.trim()) patch.apiKey = $('setup-key').value.trim();
