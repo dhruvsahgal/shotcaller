@@ -97,6 +97,51 @@ test('raw unverified capture is linked evidence, even when newer, not replacemen
   assert.ok(output.gaps.some(g => /unverified period/i.test(g)));
 });
 
+test('freshness separates a recent empty scan from the latest structured matchup', () => {
+  const partial = (id, dataset, observedAt) => ({
+    schema_version: 1,
+    kind: 'observation',
+    id,
+    stored_at: observedAt,
+    observed_at: observedAt,
+    coverage: { status: 'partial', note: 'Required dataset is unexpectedly empty' },
+    scope: {
+      dataset,
+      league_id: '123',
+      season: '2026',
+      team_id: '1',
+      matchup_id: null,
+      scoring_period: { kind: 'week', key: '5', timezone: 'America/Los_Angeles' },
+      value_basis: { value: 'actual', aggregation: 'totals' }
+    },
+    data: {
+      rows: [],
+      fragments: [{ collection_id: 'run-empty-scan', rows: [] }]
+    }
+  });
+  const output = buildOverview(
+    [wrap('week-3', matchup('2026-11-09T02:20:34.869Z', 20))],
+    [],
+    '123',
+    [
+      partial('empty-matchup', 'matchups', '2026-11-16T15:12:00Z'),
+      partial('empty-roster', 'team_roster', '2026-11-16T15:13:00Z')
+    ]
+  );
+
+  assert.deepEqual(output.freshness.latest_scan, {
+    collection_id: 'run-empty-scan',
+    observed_at: '2026-11-16T15:13:00Z',
+    status: 'partial',
+    segments: 2,
+    usable_segments: 0,
+    empty_segments: 2
+  });
+  assert.equal(output.freshness.structured_matchup_observed_at, '2026-11-09T02:20:34.869Z');
+  assert.equal(output.freshness.matchup_is_older_than_scan, true);
+  assert.match(output.gaps.at(-1), /newer scan.*no normalized rows/i);
+});
+
 test('waiver subset scope, status and recommendation remain dated source observations', () => {
   const output = buildOverview([wrap('check', { kind: 'standard_team_performance_check', observed_date: '2026-10-30',
     coverage: { waiver_scope: 'Selected five; not the full wire' },

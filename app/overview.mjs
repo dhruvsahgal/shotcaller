@@ -105,6 +105,43 @@ function observationOverview(records, leagueId) {
   };
 }
 
+function collectionId(record) {
+  return record?.data?.fragments?.find(fragment => typeof fragment?.collection_id === 'string')?.collection_id ?? null;
+}
+
+function hasRows(record) {
+  if (Array.isArray(record?.data?.rows) && record.data.rows.length > 0) return true;
+  return record?.data?.fragments?.some(fragment => Array.isArray(fragment?.rows) && fragment.rows.length > 0) ?? false;
+}
+
+function freshnessOverview(records, matchup) {
+  const dated = records.filter(record => Number.isFinite(time(record?.observed_at))).sort((a, b) => time(b.observed_at) - time(a.observed_at));
+  const newest = dated[0];
+  if (!newest) return {
+    latest_scan: null,
+    structured_matchup_observed_at: matchup?.meta?.observed_at ?? null,
+    matchup_is_older_than_scan: false
+  };
+  const id = collectionId(newest);
+  const scan = id ? dated.filter(record => collectionId(record) === id) : [newest];
+  const usable = scan.filter(hasRows).length;
+  const statuses = scan.map(record => record.coverage?.status);
+  const status = statuses.length && statuses.every(value => value === 'complete') ? 'complete' : statuses.includes('partial') ? 'partial' : 'unknown';
+  const structured = matchup?.meta?.observed_at ?? null;
+  return {
+    latest_scan: {
+      collection_id: id,
+      observed_at: newest.observed_at,
+      status,
+      segments: scan.length,
+      usable_segments: usable,
+      empty_segments: scan.length - usable
+    },
+    structured_matchup_observed_at: structured,
+    matchup_is_older_than_scan: Number.isFinite(time(structured)) && time(newest.observed_at) > time(structured)
+  };
+}
+
 export function buildOverview(records = [], decisions = [], leagueId = null, observations = [], intelligence = {}) {
   const scopedObservations = new Map();
   for (const record of [...records, ...observations]) {
@@ -124,6 +161,8 @@ export function buildOverview(records = [], decisions = [], leagueId = null, obs
   const teamSection = entry => entry ? { meta: entry.meta, week: Number(entry.payload.week), teams: entry.payload.teams.map(normalizedRow) } : null;
 
   const matchupHistory = entries.filter(({ payload }) => matchupKinds.has(payload.kind) && hasWeek(payload) && Array.isArray(payload.teams)).map(teamSection);
+  const scopedForLeague = [...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId));
+  const freshness = freshnessOverview(scopedForLeague, matchupHistory[0] ?? null);
   const league = teamSection(latest(payload => payload.kind === 'league_weekly_category_totals' && hasWeek(payload) && Array.isArray(payload.teams)));
   const roster = playerSection(latest(payload => payload.kind === 'roster_membership_observation' && Array.isArray(payload.players)));
   const teamLogEntry = latest(payload => payload.kind === 'team_log_fantasy_earned_cumulative_stats' && Array.isArray(payload.players));
@@ -193,10 +232,15 @@ export function buildOverview(records = [], decisions = [], leagueId = null, obs
   if (waivers) gaps.push('Waiver candidates are an observed subset, not a complete or continuously current availability list.');
   if (transactions.size) gaps.push('Transaction times are preserved as Yahoo displayed them; timezone and full-history completeness are not established.');
   if (recommendationEntry) gaps.push('The displayed recommendation is saved reasoning from its observation date, not a newly evaluated or executed move.');
+  if (freshness.matchup_is_older_than_scan) {
+    const scan = freshness.latest_scan;
+    gaps.push(`A newer scan was captured at ${scan.observed_at}, but ${scan.empty_segments} of ${scan.segments} segments had no normalized rows. The structured matchup remains the older dated record.`);
+  }
 
   return {
-    dataset_coverage: coverageOverview([...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId))),
-    market_evidence: marketEvidence([...entries.map(entry => entry.record), ...[...scopedObservations.values()].filter(record => leagueId === null || record.scope?.league_id === String(leagueId))]),
+    dataset_coverage: coverageOverview(scopedForLeague),
+    market_evidence: marketEvidence([...entries.map(entry => entry.record), ...scopedForLeague]),
+    freshness,
     sources, matchup: matchupHistory[0] ?? null, matchup_history: matchupHistory, observations: observationOverview([...scopedObservations.values()], leagueId),
     lineups: lineupMeta ? { meta: lineupMeta, days: [...lineupDays.values()].sort((a, b) => a.date.localeCompare(b.date)) } : null,
     roster, team_log: teamLog, league, waivers, transactions: [...transactions.values()],
