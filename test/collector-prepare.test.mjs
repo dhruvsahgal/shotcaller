@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { collectorRunEnvironment, prepareCollectorRun } from '../scripts/prepare-collector-run.mjs';
+import { collectorRunArguments, collectorRunEnvironment, prepareCollectorRun } from '../scripts/prepare-collector-run.mjs';
 import { fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
 const run = {
@@ -14,6 +14,19 @@ const run = {
 
 test('run preparation accepts the Boxes Railway URL alias', () => {
   assert.deepEqual(collectorRunEnvironment({ RAILWAY_BASE_URL: 'https://shotcaller.example', COLLECTOR_RUN_TOKEN: 'run-secret-at-least-24-characters' }), { baseUrl: 'https://shotcaller.example', collectorRunToken: 'run-secret-at-least-24-characters' });
+});
+
+test('manual catch-up explicitly requests a current immutable contract', () => {
+  const now = Date.parse('2026-11-16T14:42:43.206Z');
+  assert.deepEqual(collectorRunArguments(['--manual-now', 'data/pilot/run.json'], now), {
+    destination: 'data/pilot/run.json',
+    intendedFor: '2026-11-16T14:42:43.206Z'
+  });
+  assert.deepEqual(collectorRunArguments(['data/pilot/run.json'], now), {
+    destination: 'data/pilot/run.json',
+    intendedFor: null
+  });
+  assert.throws(() => collectorRunArguments(['--manual-now', 'one.json', 'two.json'], now), /Usage/);
 });
 
 test('run preparation requests the immutable Railway contract and writes it locally', async () => {

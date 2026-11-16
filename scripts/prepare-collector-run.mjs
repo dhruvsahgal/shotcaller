@@ -16,6 +16,13 @@ export function collectorRunEnvironment(env = process.env) {
   return { baseUrl: env.SHOTCALLER_URL || env.RAILWAY_BASE_URL, collectorRunToken: env.COLLECTOR_RUN_TOKEN };
 }
 
+export function collectorRunArguments(argv, now = Date.now()) {
+  const args = [...argv], manualNow = args[0] === '--manual-now';
+  if (manualNow) args.shift();
+  if (args.length > 1 || args[0]?.startsWith('--')) throw new Error('Usage: prepare-collector-run [--manual-now] [destination]');
+  return { destination: args[0] || 'data/pilot/run.json', intendedFor: manualNow ? new Date(now).toISOString() : null };
+}
+
 export async function prepareCollectorRun({ baseUrl, collectorRunToken, intendedFor = null, now = Date.now(), destination, fetcher = fetch }) {
   if (typeof collectorRunToken !== 'string' || collectorRunToken.length < 24) throw new Error('COLLECTOR_RUN_TOKEN must contain at least 24 characters');
   if (typeof destination !== 'string' || !destination) throw new Error('Collector run destination is required');
@@ -40,9 +47,7 @@ export async function prepareCollectorRun({ baseUrl, collectorRunToken, intended
 }
 
 async function main(argv) {
-  if (argv.length > 1) throw new Error('Usage: prepare-collector-run [destination]');
-  const destination = argv[0] || 'data/pilot/run.json';
-  return prepareCollectorRun({ ...collectorRunEnvironment(), destination });
+  return prepareCollectorRun({ ...collectorRunEnvironment(), ...collectorRunArguments(argv) });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
