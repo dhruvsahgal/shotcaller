@@ -50,13 +50,33 @@ function showTab(id) {
   document.querySelectorAll('.view').forEach(v => v.hidden = v.id !== id);
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
 }
+function evidenceStatus(snapshots, latestId) {
+  const latest = snapshots.find(snapshot => snapshot.id === latestId);
+  if (latest) return {
+    message: `Latest complete capture: ${latest.observed_at}. Check its period before making a move.`,
+    signal: 'EVIDENCE CONNECTED'
+  };
+  if (!snapshots.length) return {
+    message: 'No saved evidence is connected. Import historical records or complete a Yahoo capture.',
+    signal: 'NO EVIDENCE'
+  };
+  const dated = snapshots
+    .map(snapshot => ({ value: snapshot.observed_at, time: Date.parse(snapshot.observed_at) }))
+    .filter(observation => Number.isFinite(observation.time))
+    .sort((left, right) => right.time - left.time);
+  const observedThrough = dated.length ? ` · observed through ${dated[0].value.slice(0, 10)}` : '';
+  return {
+    message: `Historical corpus connected · ${snapshots.length} evidence record${snapshots.length === 1 ? '' : 's'}${observedThrough}. Automated live capture not yet verified.`,
+    signal: 'HISTORY CONNECTED'
+  };
+}
 function renderState() {
   renderOverview(state.overview, id => attempt(async () => { if (state.decisions.some(d => d.id === id)) { showTab('decisions'); return; } showTab('evidence'); await selectSnapshot(id); }));
   renderIntelligence();
   $('league-id').textContent = state.league_id;
-  const latest = state.snapshots.find(s => s.id === state.latest_id);
-  $('freshness').textContent = latest ? `Latest complete capture: ${latest.observed_at}. Check its period before making a move.` : 'Saved observations consolidated below · no complete automated Yahoo capture yet.';
-  $('signal').textContent = latest ? 'EVIDENCE CONNECTED' : 'SAVED EVIDENCE';
+  const evidence = evidenceStatus(state.snapshots, state.latest_id);
+  $('freshness').textContent = evidence.message;
+  $('signal').textContent = evidence.signal;
   $('notice').textContent = `${state.refresh.status.toUpperCase()} · ${state.refresh.detail}`;
   $('refresh').disabled = state.refresh.status === 'running';
   const history = $('history'); history.replaceChildren();
