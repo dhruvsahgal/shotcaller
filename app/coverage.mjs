@@ -136,7 +136,7 @@ export function dailyContributions(plan, fragments = []) {
 export function createPilotAudit({ start_date, scheduled_attempts, sample_seed }) {
   if (!validDate(start_date) || !Array.isArray(scheduled_attempts) || !sample_seed) throw new Error('Invalid pilot audit plan');
   const dates = [start_date]; while (dates.length < 7) dates.push(dayAfter(dates.at(-1)));
-  if (!scheduled_attempts.length || scheduled_attempts.some(a => !a.id || !dates.includes(a.scoring_date)) || dates.some(date => scheduled_attempts.filter(a => a.scoring_date === date).length !== 2) || new Set(scheduled_attempts.map(a => a.id)).size !== scheduled_attempts.length) throw new Error('Invalid pilot scheduled attempts');
+  if (!scheduled_attempts.length || scheduled_attempts.some(a => !a.id || !dates.includes(a.scoring_date)) || dates.some(date => scheduled_attempts.filter(a => a.scoring_date === date).length !== 1) || new Set(scheduled_attempts.map(a => a.id)).size !== scheduled_attempts.length) throw new Error('Invalid pilot scheduled attempts');
   return { version: 1, start_date, dates, sample_seed, scheduled_attempts: structuredClone(scheduled_attempts), matrix: dates.flatMap(date => coverageDatasets.map(dataset => ({ date, dataset }))) };
 }
 

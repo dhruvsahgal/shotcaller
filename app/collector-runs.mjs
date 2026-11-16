@@ -6,8 +6,8 @@ import { validateEvidenceScope, validateIdentifier, validateTimestamp } from './
 import { validateCollectorAllowedPages, validateCollectorRequest } from '../scripts/validate-collector-output.mjs';
 import { createCoveragePlan } from './coverage.mjs';
 
-const interval = 12 * 60 * 60_000;
-const firstSlot = Date.parse('2000-01-01T06:00:00+08:00');
+const interval = 24 * 60 * 60_000;
+const firstSlot = Date.parse('2000-01-01T16:00:00+08:00');
 const settledOutcomes = new Set(['complete', 'partial', 'failed', 'cancelled', 'needs_login']);
 function receiptSettled(receipt, attempts, runId) {
   if (!receipt.attempt_id) return attempts.some(attempt => attempt.run_id === runId && settledOutcomes.has(attempt.outcome) && Date.parse(attempt.finished_at) >= Date.parse(receipt.accepted_at));
@@ -81,7 +81,7 @@ export class CollectorRuns {
     try { return JSON.parse(await readFile(join(this.root, 'schedule.json'), 'utf8')); }
     catch (error) {
       if (error.code !== 'ENOENT') throw error;
-      const initial = { version: 1, timezone: 'Asia/Singapore', times: ['06:00', '18:00'], paused: true, scope: null, next_run: nextCollectionSlot(this.now()), last_slot: null };
+      const initial = { version: 1, timezone: 'Asia/Singapore', times: ['16:00'], paused: true, scope: null, next_run: nextCollectionSlot(this.now()), last_slot: null };
       await atomicJSON(join(this.root, 'schedule.json'), initial);
       return initial;
     }
