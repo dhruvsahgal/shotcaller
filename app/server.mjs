@@ -132,6 +132,13 @@ export async function createApp(config, options = {}) {
         }
         return send(405, { error: 'Collector method not allowed' });
       }
+      if (req.method === 'POST' && url.pathname === '/api/collector/run' && authorized(req, config.collectorRunToken)) {
+        const input = await body(req);
+        if (!input || Object.keys(input).sort().join(',') !== 'dispatch,intended_for' || input.dispatch !== false) throw new Error('Collector run credential accepts only a supervised saved-plan request');
+        const settings = await collectorRuns.settings();
+        if (!settings.plan) throw new Error('Collector run credential requires a saved full-league plan');
+        return send(201, await collectorRuns.runNow({ intended_for: input.intended_for, dispatch: false }));
+      }
       if (!authorized(req, config.token)) return send(401, { error: 'Enter your ShotCaller access token' });
       if (req.method === 'GET' && url.pathname === '/api/actions') return send(200, await actions.status());
       if (req.method === 'GET' && url.pathname === '/api/operations') {

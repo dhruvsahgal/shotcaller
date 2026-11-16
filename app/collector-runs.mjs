@@ -48,6 +48,20 @@ function coverageScope(plan) {
   return { dataset: 'league_coverage', league_id: plan.league_id, season: plan.season, team_id: null, matchup_id: null, scoring_period: structuredClone(plan.scoring_period), value_basis: { value: 'actual', aggregation: 'snapshot' } };
 }
 
+function dispatchPrompt(run, attemptId) {
+  if (!run.collection_plan) return `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, attempt ${attemptId}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}. Exact allowed_pages: ${JSON.stringify(run.allowed_pages)}. Do not upload, access credentials, or change Yahoo state.`;
+  return `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, attempt ${attemptId}.
+
+Write this exact immutable Railway run object to data/pilot/run.json before collecting; do not alter, regenerate, or summarize it:
+${JSON.stringify(run)}
+
+After the bundle and manifest are complete, run:
+npm run validate:league-bundle -- data/pilot/run.json data/pilot/manifest.json data/pilot
+Only after that succeeds, invoke the trusted uploader exactly once:
+npm run upload:league-bundle -- data/pilot/run.json data/pilot/manifest.json data/pilot
+The uploader reads SHOTCALLER_URL and COLLECTOR_TOKEN from the trusted environment. Do not inspect, print, copy, log, or place either value in chat or files. Do not upload by any other mechanism. Return the compact Railway readback receipt, coverage gaps, and evidence paths. A failed validation, upload, or readback is partial or failed and must not be retried by broadening scope. Never change Yahoo state.`;
+}
+
 export class CollectorRuns {
   constructor(config, store, { now = () => Date.now(), fetcher = fetch } = {}) {
     this.config = config; this.store = store; this.now = now; this.fetcher = fetcher;
@@ -151,7 +165,7 @@ export class CollectorRuns {
     // therefore blocks a second launch until an operator reconciles this generation.
     await atomicJSON(receiptPath, dispatching);
     // Only identifiers and bounded scope go to the model. An isolated broker handles upload capabilities.
-    const input = { prompt: `Perform the observation-only collector contract in prompts/collector-readonly.md. Produce the complete ingest-ready artifact bundle described there for run ${run.id}, attempt ${attemptId}, idempotency key ${run.idempotency_key}. Scope: ${JSON.stringify(run.scope)}.${run.collection_plan ? ` Declared collection_plan: ${JSON.stringify(run.collection_plan)}.` : ''} Exact allowed_pages: ${JSON.stringify(run.allowed_pages)}. Do not upload, access credentials, or change Yahoo state.`, target: { kind: 'existing_thread', threadId: run.thread_id } };
+    const input = { prompt: dispatchPrompt(run, attemptId), target: { kind: 'existing_thread', threadId: run.thread_id } };
     let response;
     try {
       response = await this.fetcher(this.config.boxesRunUrl, { method: 'POST', headers: { Authorization: `Bearer ${this.config.boxesSecret}`, 'Content-Type': 'application/json', 'Idempotency-Key': run.idempotency_key }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000), redirect: 'error' });

@@ -1,0 +1,18 @@
+# Scheduled full-league collection
+
+Work only in the ShotCaller repository. Pull the current default branch with a fast-forward update, then request the immutable collection contract:
+
+```sh
+npm run prepare:league-run -- data/pilot/run.json
+```
+
+Read `data/pilot/run.json` and follow `prompts/collector-readonly.md` for that exact run and its exact `allowed_pages`. Capture every required segment or record its coverage gap. Never change Yahoo state.
+
+After writing the bundle and manifest, run:
+
+```sh
+npm run validate:league-bundle -- data/pilot/run.json data/pilot/manifest.json data/pilot
+npm run upload:league-bundle -- data/pilot/run.json data/pilot/manifest.json data/pilot
+```
+
+Run the uploader only after validation succeeds and only once. It reads credentials from the trusted environment. Never inspect, print, copy, log, or save credential values. Finish with the compact Railway readback receipt, coverage gaps, and local evidence paths. A failed request, validation, upload, or readback is incomplete; do not claim success or broaden scope.

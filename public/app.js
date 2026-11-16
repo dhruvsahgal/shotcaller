@@ -94,6 +94,11 @@ function renderState() {
     const entry = node('div', null, 'journal'); entry.append(node('small', `${d.status.toUpperCase()} · ${d.created_at}`), node('h3', d.question), node('p', d.answer), node('p', `Prompt ${d.prompt_hash} · ${d.served_model}`, 'mono')); journal.append(entry);
   }
   if (!state.decisions.length) empty('journal', 'Your first decision brief will appear here, with its sources and prompt fingerprint.');
+  const intents = state.actions?.intents || [];
+  if (intents.length) $('action-queue').replaceChildren(table(['Status', 'Action', 'Scoring date', 'Mode', 'Evidence'], intents.map(intent => {
+    return [intent.current_status || 'proposed', `${intent.action_class}: ${JSON.stringify(intent.operation)}`, intent.scoring_date, intent.execution_mode, evidenceLine(intent.source_snapshot_ids)];
+  })));
+  else empty('action-queue', 'No structured actions have been proposed yet. Decision briefs remain advice until converted into an exact action intent.');
   $('prompt-hash').textContent = state.prompt.hash || state.prompt.error;
   $('prompt-text').textContent = state.prompt.text || '';
 }
@@ -143,10 +148,16 @@ function renderIntelligence() {
     ['Live roster mutations', state.actions?.mode === 'live' && state.actions?.gates_verified ? 'Class bounded' : 'Disabled', 'Each live action still requires a dedicated one-time manager authorization']
   ]));
   if (state.actions?.intents?.length) operations.append(node('h3', 'Action intents'), table(['Class', 'Mode', 'Scoring date', 'Expires'], state.actions.intents.slice(0, 10).map(row => [row.action_class, row.execution_mode, row.scoring_date, row.expires_at])));
+  const collectorOps = state.operations?.collector;
+  if (collectorOps?.unresolved_run) operations.append(node('p', `Collector ${collectorOps.unresolved_run.run_id} needs attention: ${collectorOps.unresolved_run.status} · deadline ${collectorOps.unresolved_run.deadline}`, 'caveat'));
+  if (collectorOps?.attempts?.length) operations.append(node('h3', 'Recent collection receipts'), table(['Attempt', 'Outcome', 'Finished'], collectorOps.attempts.slice(0, 10).map(row => [row.id, row.outcome, row.finished_at])));
   if (state.overview?.gaps?.length) operations.append(node('h3', 'Coverage gaps'), ...state.overview.gaps.map(gap => node('p', gap, 'caveat')));
 }
 async function load() {
-  state = await api('state'); renderState();
+  const operations = state?.operations;
+  state = await api('state');
+  if (operations) state.operations = { ...operations, ...(state.operations || {}) };
+  renderState();
   if (!selected && state.snapshots.length) await selectSnapshot(state.latest_id || state.snapshots[0].id);
   clearTimeout(poll);
   if (state.refresh.status === 'running') poll = setTimeout(() => attempt(load), 2000);
@@ -161,6 +172,7 @@ document.querySelectorAll('[data-tab]').forEach(button => button.addEventListene
 $('refresh').addEventListener('click', () => attempt(async () => { await api('refresh', {}); await load(); }));
 async function loadSetup() {
   const settings = await api('setup');
+  state.expected_teams = settings.expected_teams;
   $('setup-league').value = settings.league_id;
   $('setup-teams').value = settings.expected_teams;
   $('setup-model').value = settings.model;
@@ -173,11 +185,18 @@ async function loadCollector() {
   collector = await api('collector');
   const target = collector.plan ? `full league · ${collector.plan.segments.length} segments` : collector.scope ? `team ${collector.scope.team_id} roster` : 'no collection target';
   $('collector-status').textContent = `${collector.paused ? 'PAUSED' : 'ACTIVE'} · ${target} · 06:00 / 18:00 Singapore · next slot ${collector.next_run} · ${collector.gates_verified ? 'Pilot gates attested by operator' : 'Live pilot gates unverified'}`;
-  if (collector.scope) {
-    $('collector-team').value = collector.scope.team_id;
-    $('collector-season').value = collector.scope.season;
-    $('collector-week').value = collector.scope.scoring_period.key;
-    $('collector-timezone').value = collector.scope.scoring_period.timezone;
+  const saved = collector.plan || collector.scope;
+  if (saved) {
+    $('collector-season').value = saved.season;
+    $('collector-week').value = saved.scoring_period.key;
+    $('collector-timezone').value = saved.scoring_period.timezone;
+  }
+  if (collector.plan) {
+    $('collector-start-date').value = collector.plan.scoring_dates[0];
+    $('collector-teams').value = collector.plan.team_ids.join(',');
+    $('collector-matchups').value = collector.plan.matchups.map(row => row.team_ids.join('-')).join(',');
+  } else {
+    $('collector-teams').value ||= Array.from({ length: Number(state.expected_teams || 10) }, (_, index) => index + 1).join(',');
   }
   const hasTarget = Boolean(collector.scope || collector.plan);
   $('collector-run').disabled = !hasTarget;
@@ -206,7 +225,16 @@ function setupForm(id, action) {
   }); });
 }
 setupForm('league-form', () => api('setup', { leagueId: $('setup-league').value.trim(), expectedTeams: Number($('setup-teams').value) }));
-setupForm('collector-form', () => api('collector/settings', { paused: true, plan: null, scope: { dataset: 'team_roster', league_id: state.league_id, season: $('collector-season').value.trim(), team_id: $('collector-team').value.trim(), scoring_period: { kind: 'week', key: $('collector-week').value.trim(), timezone: $('collector-timezone').value.trim() }, value_basis: { value: 'observed', aggregation: 'roster' } } }));
+function day(date, offset) { const value = new Date(`${date}T00:00:00.000Z`); value.setUTCDate(value.getUTCDate() + offset); return value.toISOString().slice(0, 10); }
+function leaguePlan() {
+  const teamIds = $('collector-teams').value.split(',').map(value => value.trim()).filter(Boolean);
+  const matchups = $('collector-matchups').value.split(',').map((pair, index) => ({ id: `matchup-${index + 1}`, team_ids: pair.split('-').map(value => value.trim()).filter(Boolean) }));
+  const start = $('collector-start-date').value;
+  const transactionEnd = `${day(start, 7)}T00:00:00.000Z`;
+  const transactionStart = `${day(start, -7)}T00:00:00.000Z`;
+  return { league_id: state.league_id, season: $('collector-season').value.trim(), scoring_period: { kind: 'week', key: $('collector-week').value.trim(), timezone: $('collector-timezone').value.trim() }, team_ids: teamIds, matchups, scoring_dates: Array.from({ length: 7 }, (_, index) => day(start, index)), transaction_window: { start: transactionStart, end: transactionEnd } };
+}
+setupForm('collector-form', () => api('collector/settings', { paused: true, scope: null, plan: leaguePlan() }));
 setupForm('model-form', async () => {
   const patch = { model: $('setup-model').value.trim(), endpoint: $('setup-endpoint').value.trim() };
   if ($('setup-key').value.trim()) patch.apiKey = $('setup-key').value.trim();

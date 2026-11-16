@@ -45,6 +45,15 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.locator('[data-tab=setup]').click();
     await operationsRefresh;
     assert.match(await page.locator('#operations-intelligence').innerText(), /Live roster mutations\s+Disabled/);
+    await page.locator('#collector-season').fill('2026');
+    await page.locator('#collector-week').fill('5');
+    await page.locator('#collector-start-date').fill('2026-11-16');
+    await page.locator('#collector-teams').fill('1,2,3,4,5,6,7,8,9,10');
+    await page.locator('#collector-matchups').fill('1-2,3-4,5-6,7-8,9-10');
+    const planRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/collector/settings' && request.method() === 'POST');
+    await page.locator('#collector-form button').click();
+    const planBody = JSON.parse((await planRequest).postData());
+    assert.deepEqual(planBody.plan.transaction_window, { start: '2026-11-09T00:00:00.000Z', end: '2026-11-23T00:00:00.000Z' });
     await page.locator('[data-tab=overview]').click();
     const lineupRows=await page.locator('#overview-lineups tbody tr').allTextContents();
     assert.match(lineupRows[0],/Not captured/);
@@ -64,6 +73,7 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.locator('#setup-key').fill('test-provider-key-not-real');
     await page.getByRole('button', { name: 'Save model', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('setup-status').textContent === 'Saved to your private volume.');
+    assert.match(await page.locator('#operations-intelligence').innerText(), /Private volume/);
     assert.equal(await page.locator('#setup-key').inputValue(), '');
     assert.match(await page.locator('#key-status').innerText(), /saved privately/);
     await page.screenshot({ path: 'test-results/shotcaller-setup-desktop.png', fullPage: true });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { collectorUpload } from '../scripts/upload-collector-bundle.mjs';
+import { collectorUpload, collectorUploadEnvironment } from '../scripts/upload-collector-bundle.mjs';
 import { harness } from './helpers/collector-ingest.mjs';
 import { fullLeagueBundle, fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
@@ -21,6 +21,11 @@ function json(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 const manifestReceipt = data => data.manifest;
+
+test('uploader accepts the Boxes Railway URL alias and prefers the explicit URL', () => {
+  assert.deepEqual(collectorUploadEnvironment({ RAILWAY_BASE_URL: 'https://shotcaller.example', COLLECTOR_TOKEN: 'broker-secret-at-least-24' }), { baseUrl: 'https://shotcaller.example', collectorToken: 'broker-secret-at-least-24' });
+  assert.deepEqual(collectorUploadEnvironment({ SHOTCALLER_URL: 'https://preferred.example', RAILWAY_BASE_URL: 'https://legacy.example', COLLECTOR_TOKEN: 'broker-secret-at-least-24' }), { baseUrl: 'https://preferred.example', collectorToken: 'broker-secret-at-least-24' });
+});
 
 test('trusted uploader preflights, uploads, commits and verifies Railway readback', async () => {
   const data = await fixture(), calls = [];
