@@ -34,7 +34,12 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.locator('#token').fill(config.token);
     await page.getByRole('button', { name: 'Connect →', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
-    assert.match(await page.locator('#freshness').innerText(), /Saved observations/);
+    const freshness = await page.locator('#freshness').innerText();
+    assert.match(freshness, /Historical corpus connected/);
+    assert.match(freshness, /3 evidence records/);
+    assert.match(freshness, /observed through 2026-10-30/);
+    assert.match(freshness, /Automated live capture not yet verified/);
+    assert.equal(await page.locator('#signal').innerText(), 'HISTORY CONNECTED');
     assert.equal(await page.locator('#overview').isVisible(), true);
     assert.match(await page.locator('#overview-league').innerText(), /Example Team A/);
     assert.match(await page.locator('#overview-coverage').innerText(), /does not automatically sync/);
