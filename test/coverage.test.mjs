@@ -94,8 +94,8 @@ test('daily earned stats retain dropped players and publish as a period-scoped o
   assert.equal(assessSegment(spec, [fragment(spec, { filters: { fantasy_counted: true, include_dropped: false } })]).status, 'partial');
 });
 
-test('pilot preregisters fourteen attempts and requires source comparisons, transition reviews and cost/access evidence', () => {
-  const scheduled = dates.flatMap(date => [0, 1].map(slot => ({ id: `run-${date}-${slot}`, scoring_date: date })));
+test('pilot preregisters seven daily attempts and requires source comparisons, transition reviews and cost/access evidence', () => {
+  const scheduled = dates.map(date => ({ id: `run-${date}`, scoring_date: date }));
   const audit = createPilotAudit({ start_date: dates[0], scheduled_attempts: scheduled, sample_seed: 'seed-before-pilot' });
   assert.equal(audit.matrix.length, 56);
   assert.throws(() => createPilotAudit({ start_date: dates[0], scheduled_attempts: scheduled.slice(1), sample_seed: 'seed' }), /scheduled/);

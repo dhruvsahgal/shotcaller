@@ -5,12 +5,12 @@ import { harness, scope } from './helpers/collector-ingest.mjs';
 import { validateCollectorRequest } from '../scripts/validate-collector-output.mjs';
 import { fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
-test('SGT due slots are durable, paused by default and catch up only latest missed slot', async () => {
-  assert.equal(collectionSlot(Date.parse('2026-11-14T09:59:59Z')), '2026-11-13T22:00:00.000Z');
-  assert.equal(nextCollectionSlot(Date.parse('2026-11-14T10:00:00Z')), '2026-11-14T22:00:00.000Z');
+test('daily 16:00 SGT slots are durable, paused by default and catch up only latest missed slot', async () => {
+  assert.equal(collectionSlot(Date.parse('2026-11-14T07:59:59Z')), '2026-11-13T08:00:00.000Z');
+  assert.equal(nextCollectionSlot(Date.parse('2026-11-14T08:00:00Z')), '2026-11-15T08:00:00.000Z');
   const h = await harness();
   const initial = await h.runs.settings(); assert.equal(initial.paused, true);
-  assert.deepEqual(initial.times, ['06:00', '18:00']);
+  assert.deepEqual(initial.times, ['16:00']);
   assert.equal(await h.runs.tick(), null);
   await assert.rejects(h.runs.configure({ paused: false, scope }), /gates/);
   const calls = [];
@@ -31,7 +31,7 @@ test('SGT due slots are durable, paused by default and catch up only latest miss
   assert.equal(body.prompt.includes(h.config.collectorToken), false);
   assert.equal(await runs.tick(), null);
   const restarted = new CollectorRuns(h.config, h.store, h.options);
-  assert.equal((await restarted.settings()).last_slot, '2026-11-17T10:00:00.000Z');
+  assert.equal((await restarted.settings()).last_slot, '2026-11-17T08:00:00.000Z');
   h.advance(16 * 60_000); await runs.expirePending();
   assert.equal((await runs.status()).alerts[0].outcome, 'timed_out');
 });

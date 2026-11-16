@@ -7,7 +7,7 @@ import { collectorRunEnvironment, prepareCollectorRun } from '../scripts/prepare
 import { fullLeaguePlanInput } from './helpers/full-league-collector.mjs';
 
 const run = {
-  id: 'run-123', idempotency_key: 'a'.repeat(64), intended_for: '2026-11-16T10:00:00.000Z',
+  id: 'run-123', idempotency_key: 'a'.repeat(64), intended_for: '2026-11-16T08:00:00.000Z',
   scope: { dataset: 'league_coverage', league_id: '123' }, collection_plan: fullLeaguePlanInput,
   allowed_pages: ['https://basketball.fantasysports.yahoo.com/nba/123']
 };
@@ -50,5 +50,5 @@ test('run preparation reuses the deterministic Singapore collection slot', async
   await prepareCollectorRun({ ...base, now: Date.parse('2026-11-16T10:00:01Z'), destination: join(root, 'one.json') });
   await prepareCollectorRun({ ...base, now: Date.parse('2026-11-16T10:59:59Z'), destination: join(root, 'two.json') });
   assert.equal(bodies[0].intended_for, bodies[1].intended_for);
-  assert.equal(bodies[0].intended_for, '2026-11-16T10:00:00.000Z');
+  assert.equal(bodies[0].intended_for, '2026-11-16T08:00:00.000Z');
 });

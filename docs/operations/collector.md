@@ -50,7 +50,7 @@ Both native and imported rows pass through `normalizeMarketObservation` and `rec
 
 ## Seven-day audit before promotion
 
-Before the first live run, save `createPilotAudit` output with all fourteen planned attempts (06:00 and 18:00 SGT for seven days), stable attempt IDs, explicit audit dates and a random seed chosen before collection. Its matrix has every dataset class on every day. Audit dates and Yahoo scoring dates are separate concepts; record the timezone in the operational run record.
+Before the first live run, save `createPilotAudit` output with all seven planned attempts (16:00 SGT for seven days), stable attempt IDs, explicit audit dates and a random seed chosen before collection. Its matrix has every dataset class on every day. Audit dates and Yahoo scoring dates are separate concepts; record the timezone in the operational run record.
 
 For each attempt, retain the complete segment coverage result and source files. `selectAuditSamples` uses the preregistered seed to select up to three rows and one visible-total/page check per dataset for each run. Independently compare the selected rows and visible totals with the preserved source, including empty results. Record reviewer identity/time, sample seed, datasets checked, mismatches and `source_compared`; review every partial-to-complete transition separately. Do not substitute parser self-consistency for source comparison.
 

@@ -184,7 +184,7 @@ async function loadSetup() {
 async function loadCollector() {
   collector = await api('collector');
   const target = collector.plan ? `full league · ${collector.plan.segments.length} segments` : collector.scope ? `team ${collector.scope.team_id} roster` : 'no collection target';
-  $('collector-status').textContent = `${collector.paused ? 'PAUSED' : 'ACTIVE'} · ${target} · 06:00 / 18:00 Singapore · next slot ${collector.next_run} · ${collector.gates_verified ? 'Pilot gates attested by operator' : 'Live pilot gates unverified'}`;
+  $('collector-status').textContent = `${collector.paused ? 'PAUSED' : 'ACTIVE'} · ${target} · daily 16:00 Singapore · next slot ${collector.next_run} · ${collector.gates_verified ? 'Pilot gates attested by operator' : 'Live pilot gates unverified'}`;
   const saved = collector.plan || collector.scope;
   if (saved) {
     $('collector-season').value = saved.season;
