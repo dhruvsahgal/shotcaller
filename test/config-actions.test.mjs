@@ -8,6 +8,7 @@ const signingKey = 'signing-key-that-is-at-least-thirty-two-characters';
 
 test('every application, boxes, and signing credential is pairwise isolated', () => {
   assert.throws(() => configuration({ APP_TOKEN: appToken, BOXES_AUTOMATION_SECRET: appToken }), /credential isolation/);
+  assert.throws(() => configuration({ APP_TOKEN: appToken, COLLECTOR_RUN_TOKEN: appToken }), /credential isolation/);
   assert.throws(() => configuration({ BOXES_AUTOMATION_SECRET: signingKey, ACTION_SIGNING_KEY: signingKey }), /credential isolation/);
   assert.equal(assertCredentialIsolation({ token: appToken, boxesSecret, actionSigningKey: signingKey }), true);
 });

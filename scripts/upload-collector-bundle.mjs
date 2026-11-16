@@ -44,6 +44,10 @@ function descriptors(artifacts) {
 }
 function sameDescriptors(left, right) { return JSON.stringify(descriptors(left)) === JSON.stringify(descriptors(right)); }
 
+export function collectorUploadEnvironment(env = process.env) {
+  return { baseUrl: env.SHOTCALLER_URL || env.RAILWAY_BASE_URL, collectorToken: env.COLLECTOR_TOKEN };
+}
+
 export async function collectorUpload({ baseUrl, collectorToken, run, manifest, artifactRoot, fetcher = fetch, requestTimeoutMs = 120_000 }) {
   if (typeof collectorToken !== 'string' || collectorToken.length < 24) throw new Error('COLLECTOR_TOKEN must contain at least 24 characters');
   if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs >= 15 * 60_000) throw new Error('requestTimeoutMs must be shorter than the capability lifetime');
@@ -111,9 +115,9 @@ export async function collectorUpload({ baseUrl, collectorToken, run, manifest, 
 async function main(argv) {
   if (argv.length !== 3) throw new Error('Usage: upload-collector-bundle <run.json> <manifest.json> <artifact-root>');
   const [runPath, manifestPath, artifactRoot] = argv;
+  const environment = collectorUploadEnvironment();
   return collectorUpload({
-    baseUrl: process.env.SHOTCALLER_URL,
-    collectorToken: process.env.COLLECTOR_TOKEN,
+    ...environment,
     run: JSON.parse(await readFile(runPath, 'utf8')),
     manifest: JSON.parse(await readFile(manifestPath, 'utf8')),
     artifactRoot

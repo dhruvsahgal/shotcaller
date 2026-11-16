@@ -8,7 +8,7 @@ import { configuration } from '../app/config.mjs';
 import { createHash } from 'node:crypto';
 test('API protects private evidence and handles a failed refresh without fake success', async () => {
   const config = { ...configuration(), expectedTeams: 2, dataDir: await mkdtemp(join(tmpdir(), 'shotcaller-api-')), token: 'test-access-token-at-least-24-characters' };
-  Object.assign(config,{approvalToken:'test-approval-token-at-least-24-characters',executorToken:'test-executor-token-at-least-24-characters',collectorToken:'test-collector-token-at-least-24-characters',actionSigningKey:'test-signing-key-with-at-least-32-characters',actionMode:'shadow',actionGatesVerified:false,actionEnabledClasses:[]});
+  Object.assign(config,{approvalToken:'test-approval-token-at-least-24-characters',executorToken:'test-executor-token-at-least-24-characters',collectorToken:'test-collector-token-at-least-24-characters',collectorRunToken:'test-run-token-at-least-24-characters',actionSigningKey:'test-signing-key-with-at-least-32-characters',actionMode:'shadow',actionGatesVerified:false,actionEnabledClasses:[]});
   const app = await createApp(config, { collect: async () => { throw new Error('Yahoo login required. Run npm run login'); } });
   await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${app.address().port}`;
@@ -84,6 +84,13 @@ test('API protects private evidence and handles a failed refresh without fake su
     assert.equal((await brokerProbe(originalCollectorToken)).status, 401);
     assert.equal((await brokerProbe(replacementCollectorToken)).status, 400);
     assert.equal((await fetch(`${base}/api/state`, { headers })).status, 200);
+    const runHeaders = { Authorization: `Bearer ${config.collectorRunToken}`, 'Content-Type': 'application/json' };
+    assert.equal((await fetch(`${base}/api/state`, { headers: runHeaders })).status, 401);
+    assert.equal((await fetch(`${base}/api/actions`, { method: 'POST', headers: runHeaders, body: '{}' })).status, 401);
+    assert.equal((await fetch(`${base}/api/operations/collector-token`, { method: 'POST', headers: runHeaders, body: '{}' })).status, 401);
+    assert.equal((await fetch(`${base}/api/collector/run`, { method: 'POST', headers: runHeaders, body: JSON.stringify({ intended_for: '2026-11-16T10:00:00Z', dispatch: true }) })).status, 400);
+    assert.equal((await fetch(`${base}/api/collector/run`, { method: 'POST', headers: runHeaders, body: JSON.stringify({ intended_for: '2026-11-16T10:00:00Z', dispatch: false, scope: {} }) })).status, 400);
+    assert.notEqual((await fetch(`${base}/api/collector/run`, { method: 'POST', headers: runHeaders, body: JSON.stringify({ intended_for: '2026-11-16T10:00:00Z', dispatch: false }) })).status, 401);
     assert.equal((await fetch(`${base}/api/forecasts/forecast-missing`,{headers})).status,404);
     const importPayload=payload=>fetch(`${base}/api/import`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const foreignResponse = await importPayload({snapshot_id:'foreign',league_id:'999',source:{type:'test'},kind:'collected_documents',documents:[]});

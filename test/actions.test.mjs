@@ -68,6 +68,13 @@ test('partial completion preserves known state and blocks dependent retries for 
   assert.equal(reconciled.kind, 'action_reconciliation');
   assert.equal(reconciled.previous_record_id, outcome.id);
   assert.equal(reconciled.requires_reconciliation, false);
+  assert.equal((await actions.status()).intents[0].current_status, 'applied');
+  for (let index = 0; index < 11; index++) {
+    const id = `reconciliation-noise-${index}`;
+    await actions.store.publish({ id, intent_id: 'action-unrelated', attempt_id: `attempt-unrelated-${index}`, outcome: 'partial', recorded_at: `2026-11-14T10:00:${String(index + 1).padStart(2, '0')}Z`, stored_at: `2026-11-14T10:00:${String(index + 1).padStart(2, '0')}Z`, content_hash: id }, 'action-reconciliations');
+  }
+  assert.equal((await actions.status({ limit: 10 })).intents[0].current_status, 'applied');
+  await assert.rejects(actions.prepare(intent.id, { state: liveState, before_evidence_ids: ['before-retry'] }), /terminal outcome/);
   assert.equal((await actions.arm(intent.id, armInput(preflight.id))).status, 'reconcile_required');
   await assert.rejects(actions.readback(intent.id, { attempt_id: attempt.id, outcome: 'blocked', before_evidence_ids: ['before'], after_evidence_ids: ['changed'], visible_state: {} }), /Forbidden action transition/);
 });

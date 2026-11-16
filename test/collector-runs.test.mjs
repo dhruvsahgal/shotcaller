@@ -138,3 +138,22 @@ test('full-league dispatch deadline covers its runtime budget plus upload grace'
   await runs.expirePending();
   assert.equal((await runs.status()).alerts[0].outcome, 'timed_out');
 });
+
+test('full-league dispatch validates and uploads the exact Railway run through the trusted uploader', async () => {
+  const h = await harness();
+  const calls = [];
+  Object.assign(h.config, { collectorGatesVerified: true, fullLeagueCollectorGatesVerified: true, boxesRunUrl: 'https://boxes.dev/test/run', boxesSecret: 'secret', boxesThreadId: 'thread', collectorToken: 'collector-token-that-must-not-leak' });
+  const runs = new CollectorRuns(h.config, h.store, { ...h.options, fetcher: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return { status: 202, json: async () => ({ status: 'starting' }) };
+  } });
+  const run = await runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
+  await runs.dispatch(run);
+  const prompt = calls[0].prompt;
+  assert.match(prompt, /npm run validate:league-bundle -- data\/pilot\/run\.json data\/pilot\/manifest\.json data\/pilot/);
+  assert.match(prompt, /npm run upload:league-bundle -- data\/pilot\/run\.json data\/pilot\/manifest\.json data\/pilot/);
+  assert.match(prompt, /Railway readback receipt/);
+  assert.equal(prompt.includes(JSON.stringify(run)), true);
+  assert.equal(prompt.includes(h.config.collectorToken), false);
+  assert.equal(prompt.includes(h.config.boxesSecret), false);
+});

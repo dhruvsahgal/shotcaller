@@ -13,6 +13,7 @@ const playerIds = operation => [operation.player_id, operation.add_player_id, op
 const ilSlot = slot => typeof slot === 'string' && slot.startsWith('IL');
 const readbackFields = input => ({ outcome: input.outcome, before_evidence_ids: input.before_evidence_ids, after_evidence_ids: input.after_evidence_ids, visible_state: input.visible_state });
 const proposalFields = ['version', 'action_class', 'league_id', 'scoring_date', 'expires_at', 'operation', 'preconditions', 'source_snapshot_ids'];
+const terminalActionOutcomes = new Set(['applied', 'blocked', 'shadowed']);
 
 export const actionAttemptTransitions = Object.freeze({
   proposed: Object.freeze(['blocked', 'shadowed', 'preflight_passed']),
@@ -168,6 +169,8 @@ export class ActionService {
   }
   async prepare(id, input) {
     return this.serial(async () => {
+      const readbacks = [...await this.store.list('action-outcomes'), ...await this.store.list('action-reconciliations')];
+      if (readbacks.some(row => row.intent_id === id && terminalActionOutcomes.has(row.outcome))) throw new Error('Action intent already has a terminal outcome');
       const { intent, authorization, control } = await this.package(id);
       const evidence = await this.validateEvidence(input.before_evidence_ids, 'before', id);
       const preflight = preflightAction(intent, input.state, control, this.now());
@@ -255,7 +258,13 @@ export class ActionService {
   }
   async status({ limit = 10 } = {}) {
     await this.init();
-    const [intents, authorizations, attempts, outcomes, reconciliations, control] = await Promise.all(['action-intents', 'action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations'].map(folder => this.store.recent(folder, limit)).concat(this.control()));
-    return { mode: this.config.actionMode, gates_verified: this.config.actionGatesVerified, enabled_classes: this.config.actionEnabledClasses, control, intents, authorizations: authorizations.map(row => ({ id: row.id, intent_id: row.intent_id, stored_at: row.stored_at })), attempts, outcomes, reconciliations };
+    const [intents, authorizations, attempts, outcomes, reconciliations, control] = await Promise.all([this.store.recent('action-intents', limit), ...['action-authorizations', 'action-attempts', 'action-outcomes', 'action-reconciliations'].map(folder => this.store.list(folder)), this.control()]);
+    const lifecycle = [...authorizations.map(row => ({ ...row, lifecycle_status: 'authorized', lifecycle_phase: 1, lifecycle_terminal: false })), ...attempts.map(row => ({ ...row, lifecycle_status: row.status, lifecycle_phase: 2, lifecycle_terminal: false })), ...outcomes.map(row => ({ ...row, lifecycle_status: row.outcome, lifecycle_phase: 3, lifecycle_terminal: terminalActionOutcomes.has(row.outcome) })), ...reconciliations.map(row => ({ ...row, lifecycle_status: row.outcome, lifecycle_phase: 4, lifecycle_terminal: terminalActionOutcomes.has(row.outcome) }))];
+    const timestamp = row => String(row.recorded_at ?? row.stored_at ?? row.created_at ?? '');
+    lifecycle.sort((a, b) => Number(b.lifecycle_terminal) - Number(a.lifecycle_terminal) || timestamp(b).localeCompare(timestamp(a)) || b.lifecycle_phase - a.lifecycle_phase || b.id.localeCompare(a.id));
+    const latestByIntent = new Map();
+    for (const row of lifecycle) if (!latestByIntent.has(row.intent_id)) latestByIntent.set(row.intent_id, row.lifecycle_status);
+    const currentIntents = intents.map(intent => ({ ...intent, current_status: latestByIntent.get(intent.id) || 'proposed' }));
+    return { mode: this.config.actionMode, gates_verified: this.config.actionGatesVerified, enabled_classes: this.config.actionEnabledClasses, control, intents: currentIntents, authorizations: authorizations.slice(0, limit).map(row => ({ id: row.id, intent_id: row.intent_id, stored_at: row.stored_at })), attempts: attempts.slice(0, limit), outcomes: outcomes.slice(0, limit), reconciliations: reconciliations.slice(0, limit) };
   }
 }
