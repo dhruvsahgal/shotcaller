@@ -22,6 +22,26 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
   });
   const second = await store.importHistorical({ ...first.payload, snapshot_id: 'browser-test-alternate-source' });
   await store.importHistorical({snapshot_id:'partial-lineup',source:{type:'synthetic'},kind:'daily_lineup_audit',observed_date:'2026-10-30',days:[{date:'2026-10-30'},{date:'2026-10-31',playing_in_active_slots:[],benched_with_game:[],conflict:false}]});
+  await store.importHistorical({
+    snapshot_id: 'browser-test-matchup', kind: 'matchup_weekly_category_totals', observed_at: '2026-10-30T12:00:00Z', week: 1,
+    source: { captured_at: '2026-10-30T12:00:00Z', type: 'synthetic_test_fixture' },
+    teams: first.payload.teams
+  });
+  await store.saveObservation({
+    id: 'observation-ui-empty-scan',
+    source: { id: 'synthetic-source', hash: 'a'.repeat(64) },
+    observed_at: '2026-11-16T15:13:00Z',
+    observed_at_precision: 'instant',
+    scope: {
+      dataset: 'matchups', league_id: config.leagueId, season: '2026', team_id: null, matchup_id: 'matchup-1',
+      scoring_period: { kind: 'week', key: '5', timezone: 'America/Los_Angeles' },
+      value_basis: { value: 'actual', aggregation: 'totals' }
+    },
+    coverage: { status: 'partial', note: 'Required matchup dataset is unexpectedly empty' },
+    parser_version: 'synthetic-test',
+    data: { rows: [], fragments: [{ collection_id: 'run-ui-empty-scan', rows: [] }] },
+    links: {}
+  });
   await store.saveEvaluation({ schema_version: 1, kind: 'forecast_evaluation', status: 'final', evaluated_at: '2026-11-17T08:00:00Z', forecast_id: 'forecast-fixture', league_id: config.leagueId, season: '2026', week: 4, correlation_key: `${config.leagueId}:2026:4`, independent_validation_units: 1, source_snapshot_ids: ['ui-shared-source'], caveats: [], matchups: [] });
   await store.saveReport(buildWeeklyReport({ league_id: config.leagueId, season: '2026', week: 4, expected_matchups: 1, matchups: [{ id: 'm1', status: 'final', source_snapshot_ids: ['ui-shared-source'], teams: [] }], evaluations: [], decisions: [], actions: [], lineup_days: [] }));
   const app = await createApp(config, { store });
@@ -35,12 +55,14 @@ test('desktop and mobile dashboard exposes provenance, historical ranks and the 
     await page.getByRole('button', { name: 'Connect →', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
     const freshness = await page.locator('#freshness').innerText();
-    assert.match(freshness, /Historical corpus connected/);
-    assert.match(freshness, /3 evidence records/);
-    assert.match(freshness, /observed through 2026-10-30/);
-    assert.match(freshness, /Automated live capture not yet verified/);
-    assert.equal(await page.locator('#signal').innerText(), 'HISTORY CONNECTED');
+    assert.match(freshness, /Yahoo scan captured 2026-11-16T15:13:00Z/);
+    assert.match(freshness, /0\/1 datasets contained normalized rows/);
+    assert.match(freshness, /Older structured panels remain visible/);
+    assert.equal(await page.locator('#signal').innerText(), 'SCAN INCOMPLETE');
     assert.equal(await page.locator('#overview').isVisible(), true);
+    assert.match(await page.locator('#overview-content').innerText(), /latest Yahoo scan/i);
+    assert.match(await page.locator('#overview-matchup').innerText(), /historical/i);
+    assert.match(await page.locator('#overview-matchup').innerText(), /should not be read as the current score/i);
     assert.match(await page.locator('#overview-league').innerText(), /Example Team A/);
     assert.match(await page.locator('#overview-coverage').innerText(), /does not automatically sync/);
     await page.locator('[data-tab=matchup]').click();

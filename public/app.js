@@ -50,7 +50,12 @@ function showTab(id) {
   document.querySelectorAll('.view').forEach(v => v.hidden = v.id !== id);
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
 }
-function evidenceStatus(snapshots, latestId) {
+function evidenceStatus(snapshots, latestId, overview) {
+  const scan = overview?.freshness?.latest_scan;
+  if (scan?.status === 'partial') return {
+    message: `Yahoo scan captured ${scan.observed_at}, but only ${scan.usable_segments}/${scan.segments} datasets contained normalized rows. Older structured panels remain visible with their own dates.`,
+    signal: 'SCAN INCOMPLETE'
+  };
   const latest = snapshots.find(snapshot => snapshot.id === latestId);
   if (latest) return {
     message: `Latest complete capture: ${latest.observed_at}. Check its period before making a move.`,
@@ -74,7 +79,7 @@ function renderState() {
   renderOverview(state.overview, id => attempt(async () => { if (state.decisions.some(d => d.id === id)) { showTab('decisions'); return; } showTab('evidence'); await selectSnapshot(id); }));
   renderIntelligence();
   $('league-id').textContent = state.league_id;
-  const evidence = evidenceStatus(state.snapshots, state.latest_id);
+  const evidence = evidenceStatus(state.snapshots, state.latest_id, state.overview);
   $('freshness').textContent = evidence.message;
   $('signal').textContent = evidence.signal;
   $('notice').textContent = `${state.refresh.status.toUpperCase()} · ${state.refresh.detail}`;

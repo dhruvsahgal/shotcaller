@@ -24,22 +24,27 @@ function renderOverview(data, openEvidence) {
     })];
   }));
   const m = data.matchup, own = m?.teams?.[0], opponent = m?.teams?.[1];
+  const freshness = data.freshness || {}, scan = freshness.latest_scan;
   const top = node('div', null, 'overview-intro');
   top.append(node('div', 'YOUR SAVED LEAGUE / ONE VIEW', 'eyebrow'), node('h2', 'The whole board.'), node('p', 'Each section keeps its own observation date. These are saved results and notes; they do not update until new evidence is imported or captured.'));
+  if (freshness.matchup_is_older_than_scan) top.append(node('p', `Latest Yahoo scan: ${scan.observed_at} (${scan.status}). It produced normalized rows for ${scan.usable_segments}/${scan.segments} datasets, so the matchup below remains the older structured record from ${freshness.structured_matchup_observed_at}.`, 'caveat'));
   root.append(top);
   const metrics = node('div', null, 'metrics');
   const metric = (value, label) => { const box = node('div', null, 'metric'); box.append(node('strong', value), node('span', label)); metrics.append(box); };
   metric(own && opponent ? `${own.categories_won ?? '—'}–${opponent.categories_won ?? '—'}` : '—', m ? `Week ${m.week} · observed score` : 'Matchup not captured');
   metric(own ? `${own.games_remaining_displayed ?? '—'} / ${opponent?.games_remaining_displayed ?? '—'}` : '—', 'Remaining games · you / opponent');
   metric(data.status ? `${data.status.adds_used ?? '—'} / ${data.status.adds_allowed ?? '—'}` : '—', 'Weekly adds used · at last check');
-  metric(String(data.sources.length), 'Preserved evidence records');
+  metric(scan?.observed_at?.slice(0, 10) || '—', scan ? `Latest Yahoo scan · ${scan.status}` : 'No automated scan saved');
+  metric(freshness.structured_matchup_observed_at?.slice(0, 10) || '—', 'Latest structured matchup');
+  metric(String(data.sources.length + (data.observations?.scopes?.length || 0)), 'Preserved evidence records');
   root.append(metrics);
   const jump = node('div', null, 'jump-links');
   for (const [id, label] of [['matchup','Matchup'],['roster','Roster'],['lineups','Lineups'],['market','Waivers'],['transactions','Transactions'],['league','League'],['journal','Decisions'],['archive','Notebook']]) {
     const a = node('a', label); a.href = `#overview-${id}`; jump.append(a);
   }
   root.append(jump);
-  const matchup = panel('matchup', own && opponent ? `${own.name} vs ${opponent.name}` : 'Matchup', m ? `Week ${m.week} · provisional totals. Margins compare the same category; percentages use makes and attempts where available.` : 'No dated matchup observation saved.', m?.meta);
+  const matchup = panel('matchup', own && opponent ? `${own.name} vs ${opponent.name}${freshness.matchup_is_older_than_scan ? ' · historical' : ''}` : 'Matchup', m ? `Week ${m.week} · provisional totals. Margins compare the same category; percentages use makes and attempts where available.` : 'No dated matchup observation saved.', m?.meta);
+  if (freshness.matchup_is_older_than_scan) matchup.append(node('p', `A newer scan exists, but it did not produce a usable matchup table. These totals are retained as historical evidence and should not be read as the current score.`, 'caveat'));
   if (own && opponent) {
     matchup.append(table(['Category', own.name, opponent.name, 'Margin'], keys.map((k,i) => {
       const a = own.stats[k], b = opponent.stats[k], delta = a != null && b != null ? a - b : null;
