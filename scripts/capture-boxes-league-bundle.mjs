@@ -146,7 +146,7 @@ export async function captureBoxesLeagueBundle({ run, artifactRoot, cdpUrl = nul
     try {
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
       if (response && !response.ok()) throw new Error(`HTTP ${response.status()}`);
-      await page.locator('table, input[type=password], form[action*="login"]').first().waitFor({ timeout: 12_000 }).catch(() => {});
+      await page.locator('table, input[type=password], form[action*="login"]').first().waitFor({ timeout: 3_000 }).catch(() => {});
       const raw = await page.evaluate(extractVisiblePage);
       if (/login\.yahoo|consent\.yahoo/.test(raw.url) || /sign in to (?:view|access|continue)/i.test(raw.text)) {
         loginRequired = true;
