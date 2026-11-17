@@ -30,6 +30,7 @@ export function fullLeagueAllowedPages(plan) {
   plan.matchups.forEach(matchup => validateIdentifier(matchup.id, 'collector matchup ID'));
   const base = `https://basketball.fantasysports.yahoo.com/nba/${encodeURIComponent(plan.league_id)}`;
   const pages = [base, `${base}/settings`, `${base}/matchup`, `${base}/teamstats`, `${base}/transactions`, `${base}/players?status=FA`, `${base}/players?status=W`];
+  for (const matchup of plan.matchups) pages.push(`${base}/matchup?week=${encodeURIComponent(plan.scoring_period.key)}&module=matchup&mid1=${encodeURIComponent([...matchup.team_ids].sort()[0])}`);
   for (const teamId of plan.team_ids) {
     const encodedTeamId = encodeURIComponent(teamId);
     pages.push(`${base}/${encodedTeamId}`);

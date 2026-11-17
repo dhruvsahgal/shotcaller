@@ -3,6 +3,7 @@ import { digest } from './store.mjs';
 
 const keys = { GP: 'gp', 'FG%': 'fg_pct', 'FT%': 'ft_pct', '3PTM': 'three_pm', '3PM': 'three_pm', PTS: 'pts', OREB: 'oreb', REB: 'reb', AST: 'ast', ST: 'stl', STL: 'stl', BLK: 'blk' };
 const label = s => s.replaceAll('*', '').replace(/\s+/g, ' ').trim();
+const teamIdFromUrl = href => new URL(href).pathname.match(/^\/nba\/\d+\/(\d+)\/?$/)?.[1] ?? null;
 export function parsePage(raw, kind, teamId = null) {
   if (/login\.yahoo|consent\.yahoo/.test(raw.url) || /sign in to (?:view|access|continue)/i.test(raw.text)) throw new Error('Sign in to Yahoo in the collector browser');
   if (kind === 'roster' && /teamlog/.test(raw.url)) throw new Error('Team Log cannot establish current roster ownership');
@@ -12,7 +13,7 @@ export function parsePage(raw, kind, teamId = null) {
     const headers = table.headers.map(label);
     for (const row of table.rows) {
       const player = row.links.find(l => /\/nba\/players\/\d+/.test(l.href));
-      const team = row.links.find(l => /\/nba\/\d+\/\d+\/?(?:\?|$)/.test(l.href));
+      const team = row.links.find(l => teamIdFromUrl(l.href));
       const fields = Object.fromEntries(headers.map((h, i) => [h || `column_${i}`, row.cells[i] ?? null]));
       if (row.cells.length !== headers.length) {
         if (player || team) warnings.push('Column count mismatch; affected row preserved as raw evidence');
@@ -39,7 +40,7 @@ export function parsePage(raw, kind, teamId = null) {
         const teams = row.links.filter(l => /\/nba\/\d+\/\d+\/?(?:\?|$)/.test(l.href));
         rows.push({ id: digest(text).slice(0, 24), text, fields, players, teams, status: /pending|proposed|reject|cancel/i.test(text) ? 'not_completed' : 'history_entry_unverified' });
       } else {
-        rows.push({ id: player ? new URL(player.href).pathname.match(/players\/(\d+)/)[1] : team ? new URL(team.href).pathname.split('/')[3] : null, name: player?.text || team?.text || row.cells[0], fields, stats });
+        rows.push({ id: player ? new URL(player.href).pathname.match(/players\/(\d+)/)[1] : team ? teamIdFromUrl(team.href) : null, name: player?.text || team?.text || row.cells[0], fields, stats });
       }
     }
   }

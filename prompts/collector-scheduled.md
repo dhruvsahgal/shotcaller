@@ -8,6 +8,14 @@ npm run prepare:league-run -- data/pilot/run.json
 
 Read `data/pilot/run.json` and follow `prompts/collector-readonly.md` for that exact run and its exact `allowed_pages`. Capture every required segment or record its coverage gap. Never change Yahoo state.
 
+Use the deterministic DOM collector against the signed-in shared Browser. Do not summarize accessibility text or hand-author fragments:
+
+```sh
+npm run capture:boxes-league -- data/pilot/run.json data/pilot
+```
+
+The command discovers the localhost-only shared Browser endpoint, enforces every allowed-page navigation, preserves complete visible table cells and links as private evidence, and writes the structured bundle and manifest. If it cannot produce usable normalized rows, stop; do not replace it with truncated text or empty fabricated fragments.
+
 After writing the bundle and manifest, run:
 
 ```sh

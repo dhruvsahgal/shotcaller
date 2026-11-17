@@ -23,3 +23,15 @@ test('unexpected tables cannot pass as complete stats or empty transaction histo
   assert.deepEqual(parsePage(empty, 'transactions').warnings, []);
   assert.deepEqual(parsePage({ ...empty, text: 'No players found' }, 'players').warnings, []);
 });
+test('team table links retain the Yahoo team ID rather than the URL path prefix', () => {
+  const teamRaw = {
+    ...raw,
+    tables: [{
+      headers: ['Team', 'PTS'],
+      rows: [{ cells: ['Example team', '181'], links: [{ text: 'Example team', href: 'https://basketball.fantasysports.yahoo.com/nba/12345/7' }] }]
+    }]
+  };
+  const page = parsePage(teamRaw, 'teamstats');
+  assert.equal(page.rows[0].id, '7');
+  assert.equal(page.rows[0].stats.pts, 181);
+});

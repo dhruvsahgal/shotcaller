@@ -8,6 +8,7 @@
     "shotcaller": "node --env-file-if-exists=.env app/cli.mjs",
     "login": "node --env-file-if-exists=.env app/login.mjs",
     "prepare:league-run": "node --env-file-if-exists=.env scripts/prepare-collector-run.mjs",
+    "capture:boxes-league": "node scripts/capture-boxes-league-bundle.mjs",
     "validate:league-bundle": "node scripts/validate-league-collector-bundle.mjs",
     "upload:league-bundle": "node --env-file-if-exists=.env scripts/upload-collector-bundle.mjs"
   },
