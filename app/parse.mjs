@@ -3,6 +3,7 @@ import { digest } from './store.mjs';
 
 const keys = { GP: 'gp', 'FG%': 'fg_pct', 'FT%': 'ft_pct', '3PTM': 'three_pm', '3PM': 'three_pm', PTS: 'pts', OREB: 'oreb', REB: 'reb', AST: 'ast', ST: 'stl', STL: 'stl', BLK: 'blk' };
 const label = s => s.replaceAll('*', '').replace(/\s+/g, ' ').trim();
+const playerIdFromUrl = href => new URL(href).pathname.match(/^\/nba\/players\/(\d+)\/?$/)?.[1] ?? null;
 const teamIdFromUrl = href => new URL(href).pathname.match(/^\/nba\/\d+\/(\d+)\/?$/)?.[1] ?? null;
 export function parsePage(raw, kind, teamId = null) {
   if (/login\.yahoo|consent\.yahoo/.test(raw.url) || /sign in to (?:view|access|continue)/i.test(raw.text)) throw new Error('Sign in to Yahoo in the collector browser');
@@ -12,13 +13,14 @@ export function parsePage(raw, kind, teamId = null) {
   for (const table of raw.tables) {
     const headers = table.headers.map(label);
     for (const row of table.rows) {
-      const player = row.links.find(l => /\/nba\/players\/\d+/.test(l.href));
+      const player = row.links.find(l => playerIdFromUrl(l.href));
       const team = row.links.find(l => teamIdFromUrl(l.href));
       const cells = [...row.cells];
       const actionIndex = headers.indexOf('Action');
       if (actionIndex >= 0 && cells.length === headers.length + 1) cells.splice(actionIndex, 2, label(`${cells[actionIndex]} ${cells[actionIndex + 1]}`));
       const fields = Object.fromEntries(headers.map((h, i) => [h || `column_${i}`, cells[i] ?? null]));
-      if (cells.length !== headers.length) {
+      const headerlessTransaction = kind === 'transactions' && headers.length === 0;
+      if (!headerlessTransaction && cells.length !== headers.length) {
         if (player || team) warnings.push('Column count mismatch; affected row preserved as raw evidence');
         continue;
       }
@@ -39,11 +41,11 @@ export function parsePage(raw, kind, teamId = null) {
       if (kind === 'transactions') {
         const text = row.cells.join(' | ');
         if (!/\b(add|drop|trade|waiver|claimed)\b/i.test(text)) continue;
-        const players = row.links.filter(l => /\/nba\/players\/\d+/.test(l.href));
+        const players = row.links.filter(l => playerIdFromUrl(l.href));
         const teams = row.links.filter(l => /\/nba\/\d+\/\d+\/?(?:\?|$)/.test(l.href));
         rows.push({ id: digest(text).slice(0, 24), text, fields, players, teams, status: /pending|proposed|reject|cancel/i.test(text) ? 'not_completed' : 'history_entry_unverified' });
       } else {
-        rows.push({ id: player ? new URL(player.href).pathname.match(/players\/(\d+)/)[1] : team ? teamIdFromUrl(team.href) : null, name: player?.text || team?.text || row.cells[0], fields, stats });
+        rows.push({ id: player ? playerIdFromUrl(player.href) : team ? teamIdFromUrl(team.href) : null, name: player?.text || team?.text || row.cells[0], fields, stats });
       }
     }
   }
