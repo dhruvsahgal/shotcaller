@@ -126,6 +126,13 @@ export async function captureBoxesLeagueBundle({ run, artifactRoot, cdpUrl = nul
   const context = browser.contexts()[0];
   if (!context) { await browser.close(); throw new Error('Boxes shared Browser has no authenticated context'); }
   const page = await context.newPage();
+  await page.route('**/*', route => {
+    const request = route.request();
+    const host = new URL(request.url()).hostname;
+    const disposable = ['image', 'media', 'font'].includes(request.resourceType());
+    const advertising = /(?:doubleclick|googlesyndication|googleadservices|adtrafficquality|casalemedia|onetag-sys|2mdn)\./.test(host);
+    return disposable || advertising ? route.abort() : route.continue();
+  });
   const pagesByGroup = new Map(), captures = new Map(), warnings = [];
   let loginRequired = false;
 
@@ -137,7 +144,7 @@ export async function captureBoxesLeagueBundle({ run, artifactRoot, cdpUrl = nul
       return null;
     }
     try {
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
       if (response && !response.ok()) throw new Error(`HTTP ${response.status()}`);
       await page.locator('table, input[type=password], form[action*="login"]').first().waitFor({ timeout: 12_000 }).catch(() => {});
       const raw = await page.evaluate(extractVisiblePage);
