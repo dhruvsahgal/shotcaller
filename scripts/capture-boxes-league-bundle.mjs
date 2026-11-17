@@ -77,7 +77,7 @@ function sourceUrl(base, segment) {
   if (['team_roster', 'player_period_stats'].includes(dataset)) return `${base}/${segment.scope.team_id}`;
   if (['daily_lineup', 'daily_contributions'].includes(dataset)) return `${base}/${segment.scope.team_id}?date=${segment.scope.scoring_period.key}`;
   if (dataset === 'matchups') return `${base}/matchup?week=${segment.scope.scoring_period.key}&module=matchup&mid1=${segment.expected_team_ids[0]}`;
-  if (dataset === 'team_period_stats') return `${base}/teamstats`;
+  if (dataset === 'team_period_stats') return base;
   if (dataset === 'market') return `${base}/players?status=${segment.filters.availability}`;
   return `${base}/transactions`;
 }
@@ -201,6 +201,22 @@ export async function captureBoxesLeagueBundle({ run, artifactRoot, cdpUrl = nul
   const fragments = [];
 
   for (const segment of plan.segments.filter(row => !['market', 'transactions'].includes(row.scope.dataset))) {
+    if (segment.scope.dataset === 'team_period_stats') {
+      const source = sourceForGroup('league');
+      const matchupPages = plan.segments.filter(row => row.scope.dataset === 'matchups').map(row => captures.get(sourceUrl(base, row))).filter(Boolean);
+      if (!source || !matchupPages.length) continue;
+      const parsedPages = matchupPages.map(captured => {
+        try { return { captured, parsed: parsePage(captured.raw, 'matchup') }; }
+        catch { return null; }
+      }).filter(Boolean);
+      const parsed = { rows: parsedPages.flatMap(item => item.parsed.rows), warnings: parsedPages.flatMap(item => item.parsed.warnings) };
+      const rows = normalizeTeamPeriodRows(parsed, segment.expected_team_ids);
+      const observedAt = parsedPages.map(item => item.captured.observedAt).sort().at(-1);
+      const status = parsed.warnings.length || rows.length !== segment.expected_team_ids.length ? 'partial' : 'complete';
+      fragments.push(fragment({ run, segment, source, url: base, observedAt, rows, status }));
+      warnings.push(...parsed.warnings.map(message => `team_period_stats: ${message}`));
+      continue;
+    }
     const url = sourceUrl(base, segment), captured = captures.get(url), source = sourceForGroup(groupFor(segment));
     if (!captured || !source) continue;
     let parsed;

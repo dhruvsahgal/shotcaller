@@ -53,3 +53,24 @@ test('opponent roster rows collapse Yahoo two-cell actions into the single Actio
   assert.equal(page.rows[0].stats.pts, 19);
   assert.deepEqual(page.warnings, []);
 });
+test('headerless Yahoo transaction rows preserve player legs and event text', () => {
+  const transactions = {
+    ...raw,
+    url: 'https://basketball.fantasysports.yahoo.com/nba/12345/transactions',
+    tables: [{
+      headers: [],
+      rows: [{
+        cells: ['add drop', 'Example Player Free Agent Other Player To Waivers', 'Example Team Nov 16'],
+        links: [
+          { text: 'Example Player', href: 'https://sports.yahoo.com/nba/players/1234/' },
+          { text: 'Other Player', href: 'https://sports.yahoo.com/nba/players/5678/' }
+        ]
+      }]
+    }]
+  };
+  const page = parsePage(transactions, 'transactions');
+  assert.equal(page.rows.length, 1);
+  assert.deepEqual(page.rows[0].players.map(player => player.text), ['Example Player', 'Other Player']);
+  assert.match(page.rows[0].text, /To Waivers/);
+  assert.deepEqual(page.warnings, []);
+});
