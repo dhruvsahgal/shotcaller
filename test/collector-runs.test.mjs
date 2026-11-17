@@ -96,13 +96,14 @@ test('full-league intentions persist the declared plan and exact bounded Yahoo r
   const run = await h.runs.create({ plan: fullLeaguePlanInput, intended_for: '2026-11-16T10:00:00Z' });
   assert.equal(run.scope.dataset, 'league_coverage');
   assert.equal(run.collection_plan.segments.length, 169);
-  assert.equal(run.allowed_pages.length, 207);
+  assert.equal(run.allowed_pages.length, 212);
   assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/players?status=FA'));
   assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/transactions'));
   assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/1?date=2026-11-16'));
   assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/players?count=975&status=FA'));
   assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/players?count=975&status=W'));
   assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/transactions?count=975'));
+  assert.ok(run.allowed_pages.includes('https://basketball.fantasysports.yahoo.com/nba/999/matchup?week=5&module=matchup&mid1=1'));
   for (const teamId of fullLeaguePlanInput.team_ids) for (const date of fullLeaguePlanInput.scoring_dates) assert.ok(run.allowed_pages.includes(`https://basketball.fantasysports.yahoo.com/nba/999/${teamId}?date=${date}`));
   for (const page of run.allowed_pages) assert.equal(validateCollectorRequest({ method: 'GET', url: page, allowedPages: run.allowed_pages }).allowed, true);
   assert.equal(validateCollectorRequest({ method: 'POST', url: run.allowed_pages[0], allowedPages: run.allowed_pages }).allowed, false);

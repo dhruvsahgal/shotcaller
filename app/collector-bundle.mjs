@@ -44,6 +44,8 @@ export function validateLeagueCollectorBundle({ output, capture, run, artifacts 
   exactKeys(output.login, ['required', 'challenge'], 'league collector login');
 
   const coverage = assessCoverage(plan, capture.fragments);
+  const usableRows = capture.fragments.reduce((sum, fragment) => sum + (Array.isArray(fragment?.rows) ? fragment.rows.length : 0), 0);
+  if (output.status !== 'needs_login' && usableRows === 0) throw new Error('Invalid league collector usable rows: observed pages produced no normalized data');
   if (output.coverage_hash !== canonicalDigest(coverage)) throw new Error('Invalid league collector coverage reconciliation');
   if (output.status === 'needs_login') {
     if (output.login.required !== true || !collectorLoginChallenges.has(output.login.challenge) || capture.fragments.length !== 0 || coverage.status !== 'unknown') throw new Error('Invalid league collector login receipt');

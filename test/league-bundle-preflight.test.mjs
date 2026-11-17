@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { canonicalDigest } from '../app/store.mjs';
+import { assessCoverage } from '../app/coverage.mjs';
 import { validateLocalLeagueBundle } from '../scripts/validate-league-collector-bundle.mjs';
 import { collectorUpload } from '../scripts/upload-collector-bundle.mjs';
 import { harness } from './helpers/collector-ingest.mjs';
@@ -54,6 +55,20 @@ test('league bundle preflight rejects forged source pages, future times and cove
   await t.test('coverage', async () => {
     const input = await stagedBundle(bundle => { bundle.output.coverage_hash = '0'.repeat(64); });
     await assert.rejects(validateLocalLeagueBundle(input), /coverage reconciliation/);
+  });
+  await t.test('lossy zero-row capture', async () => {
+    const input = await stagedBundle(bundle => {
+      for (const fragment of bundle.capture.fragments) {
+        fragment.rows = [];
+        fragment.reported_total_rows = null;
+        fragment.status = 'partial';
+      }
+      bundle.output.status = 'partial';
+      bundle.output.warnings = ['Rendered tables were discarded before normalization.'];
+      bundle.output.coverage_hash = canonicalDigest(assessCoverage(bundle.capture.plan, bundle.capture.fragments));
+      bundle.output.source.source_hash = canonicalDigest(bundle.capture);
+    });
+    await assert.rejects(validateLocalLeagueBundle(input), /no normalized data/);
   });
 });
 
