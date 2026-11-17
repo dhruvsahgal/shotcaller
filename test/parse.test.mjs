@@ -35,3 +35,21 @@ test('team table links retain the Yahoo team ID rather than the URL path prefix'
   assert.equal(page.rows[0].id, '7');
   assert.equal(page.rows[0].stats.pts, 181);
 });
+test('opponent roster rows collapse Yahoo two-cell actions into the single Action header', () => {
+  const opponent = {
+    ...raw,
+    tables: [{
+      headers: ['Pos', 'Players', 'Action', 'Opp', 'PTS'],
+      rows: [{
+        cells: ['PG', 'Example Player\nOKC - PG', 'trade', 'watch', '@SAS', '19'],
+        links: [{ text: 'Example Player', href: 'https://sports.yahoo.com/nba/players/1234/' }]
+      }]
+    }]
+  };
+  const page = parsePage(opponent, 'roster', '7');
+  assert.equal(page.rows.length, 1);
+  assert.equal(page.rows[0].fields.Action, 'trade watch');
+  assert.equal(page.rows[0].fields.Opp, '@SAS');
+  assert.equal(page.rows[0].stats.pts, 19);
+  assert.deepEqual(page.warnings, []);
+});
