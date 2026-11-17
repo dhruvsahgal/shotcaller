@@ -14,8 +14,11 @@ export function parsePage(raw, kind, teamId = null) {
     for (const row of table.rows) {
       const player = row.links.find(l => /\/nba\/players\/\d+/.test(l.href));
       const team = row.links.find(l => teamIdFromUrl(l.href));
-      const fields = Object.fromEntries(headers.map((h, i) => [h || `column_${i}`, row.cells[i] ?? null]));
-      if (row.cells.length !== headers.length) {
+      const cells = [...row.cells];
+      const actionIndex = headers.indexOf('Action');
+      if (actionIndex >= 0 && cells.length === headers.length + 1) cells.splice(actionIndex, 2, label(`${cells[actionIndex]} ${cells[actionIndex + 1]}`));
+      const fields = Object.fromEntries(headers.map((h, i) => [h || `column_${i}`, cells[i] ?? null]));
+      if (cells.length !== headers.length) {
         if (player || team) warnings.push('Column count mismatch; affected row preserved as raw evidence');
         continue;
       }
